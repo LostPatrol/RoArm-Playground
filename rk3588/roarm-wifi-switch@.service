@@ -2,12 +2,12 @@
 [Unit]
 Description=Switch Realtek USB Wi-Fi adapter on port %i
 After=roarm-wifi-usb.service
-StartLimitIntervalSec=120
+StartLimitIntervalSec=180
 StartLimitBurst=4
 
 [Service]
 Type=oneshot
 ExecStart=/opt/roarm-camera/.venv/bin/python /opt/roarm-camera/switch_wifi_usb.py %i
-TimeoutStartSec=25
+TimeoutStartSec=40
 Restart=on-failure
 RestartSec=3

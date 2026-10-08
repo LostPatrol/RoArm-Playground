@@ -18,7 +18,7 @@ node --check rk3588/arm_adapter.js
 node --check rk3588/playground.js
 ```
 
-Python测试覆盖串口适配、模式/程序并发与取消、视觉算法、host方向绑定及音频生命周期；历史HTTP代理和USB sysfs模拟测试保留。JavaScript测试使用模拟DOM/XHR。2026-10-09全套Python测试54/54通过（camera7、host9、playground19、vision19），真实图像样本已经补齐，无skip。图像测试需配置部署说明中的样本路径；没有样本时明确skip，不能计作通过。这些检查不能替代真人互动、实体抓取和断电启动。Node.js仅用于开发测试。
+Python测试覆盖串口适配、模式/程序并发与取消、视觉算法、host方向绑定、音频及USB切换资源生命周期；历史HTTP代理和USB sysfs模拟测试保留。JavaScript测试使用模拟DOM/XHR。2026-10-09冷启动修复后全套Python测试66/66通过（camera7、host9、playground19、vision19、wifi12），真实图像样本补齐，无skip。图像测试需配置部署说明中的样本路径；缺样本明确skip，不能计作通过。这些检查不能替代真人互动和实体抓取。实际完整断电结果见[开机联网](wifi-startup.md)。Node.js仅用于开发测试。
 
 ## 公开范围
 
