@@ -1,0 +1,2 @@
+# Optional RK3588 Python 3.8 CPU audio worker; does not change NumPy/OpenCV.
+vosk==0.3.45

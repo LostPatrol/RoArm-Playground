@@ -1,92 +1,46 @@
-<!-- RK3588 control entry: live USB camera and the arm's original interface together. -->
+<!-- RoArm Playground: Chinese demo console; device status comes from the local API. -->
 <!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>RoArm-M2 · 视频与控制</title>
-  <style>
-    * { box-sizing: border-box; }
-    body { margin: 0; color: #edf3fa; background: #17202b; font: 15px system-ui, sans-serif; }
-    header { padding: 20px 24px; border-bottom: 1px solid #344455; }
-    h1 { margin: 0 0 8px; font-size: 24px; }
-    p { line-height: 1.5; }
-    header p { margin: 0; color: #aebdcd; }
-    main { display: grid; grid-template-columns: minmax(320px, 1fr) minmax(540px, 1fr); gap: 20px; padding: 20px; }
-    section { min-width: 0; border: 1px solid #344455; border-radius: 10px; overflow: hidden; background: #1d2936; }
-    .heading { padding: 16px; }
-    h2 { margin: 0 0 8px; font-size: 19px; }
-    .heading p { margin: 0; color: #b9c8d8; }
-    #camera { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: contain; background: #111923; }
-    #camera[hidden] { display: none; }
-    #empty { padding: 70px 20px; text-align: center; color: #aebdcd; }
-    .actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 14px 16px; }
-    a { color: #8acbff; }
-    button { cursor: pointer; padding: 8px 12px; color: #edf3fa; background: #344455; border: 1px solid #577089; border-radius: 6px; }
-    iframe { display: block; width: 100%; height: calc(100vh - 240px); min-height: 620px; border: 0; background: #252936; }
-    @media (max-width: 980px) { main { grid-template-columns: 1fr; } iframe { height: 780px; } }
-  </style>
+  <meta name="theme-color" content="#f3f4ec">
+  <title>RoArm Playground · 让想法动起来</title>
+  <link rel="stylesheet" href="/playground.css">
+  <script src="/playground.js" defer></script>
 </head>
 <body>
-  <header><h1>RoArm-M2 · 视频与控制</h1><p>摄像头画面与机械臂原生控制同屏。按住方向键运动，松开停止对应轴。</p></header>
+  <header class="topbar">
+    <a class="brand" href="#"><span class="brand-mark">R<span>↗</span></span><span>RoArm <strong>Playground</strong><small>看见 · 思考 · 行动</small></span></a>
+    <div class="top-status"><span class="status-pill" id="connection"><i></i>连接中</span><button class="stop-button" id="stop">■ 停止运动</button></div>
+  </header>
   <main>
-    <section>
-      <div class="heading"><h2>摄像头实时画面</h2><p id="status">正在检查摄像头…</p></div>
-      <img id="camera" hidden alt="机械臂摄像头实时画面">
-      <div id="empty">等待摄像头画面</div>
-      <div class="actions"><a href="/snapshot.jpg" target="_blank">查看当前照片</a><button id="reconnect">重连视频</button></div>
+    <section class="intro">
+      <div><div class="eyebrow">ROBOTICS × VIBE CODING</div><h1>让一个想法，<br>在现实中<span>动起来。</span></h1><p>选择一个实验，看机械臂如何感知世界，<br class="desktop-only">再把你的规则变成它的下一步动作。</p></div>
+      <div class="intro-aside"><span class="orbit">✳</span><div><strong>18</strong><span>个互动项目</span></div><div><strong>4</strong><span>个真实关节</span></div><p>真实设备 · 本地运行<br>从第一行规则，到第一次挥手</p></div>
     </section>
-    <section>
-      <div class="heading"><h2>机械臂原生控制</h2><p id="arm-status">正在连接机械臂…</p></div>
-      <div class="actions"><button id="stop">停止持续运动</button><button id="reload-arm">重载控制页面</button></div>
-      <iframe id="arm" src="/arm/" title="RoArm-M2 原生控制界面"></iframe>
+    <section class="workspace" aria-label="实验工作台">
+      <div class="workspace-heading"><div><span class="eyebrow">LIVE WORKBENCH</span><h2 id="experiment-title">机械臂工作台</h2><p id="experiment-description">从手动控制开始，观察真实角度和运动反馈。</p></div><span class="status-pill" id="demo-state">等待状态</span></div>
+      <div class="workbench-grid">
+        <div class="vision-column">
+          <div class="video-frame" id="video-frame"><img id="camera" alt="机械臂摄像头实时画面" hidden><canvas id="overlay" aria-label="识别结果与框选目标"></canvas><div id="camera-empty"><span>◉</span><strong>等待实时画面</strong><p>摄像头状态将在连接后显示</p></div><div class="video-label"><span id="camera-state">视频连接中</span><span id="vision-stats">—</span></div></div>
+          <div class="video-tools"><a href="/snapshot.jpg" target="_blank" rel="noopener">↗ 查看当前照片</a><button class="text-button" id="reconnect">↻ 重连视频</button><span id="selection-hint">识别框来自实际推理</span></div>
+          <div class="experiment-panel" id="experiment-panel"></div>
+          <div class="result-gallery" id="results"></div>
+        </div>
+        <aside class="control-column">
+          <div class="robot-panel"><div class="panel-heading"><h3>数字机械臂</h3><span>真实角度驱动</span></div><canvas id="robot-view" aria-label="可旋转三维机械臂示意图"></canvas><div class="model-note">拖动旋转视角 · 几何示意，非标定模型</div><div id="joint-summary" class="joint-summary"></div></div>
+          <div class="manual-panel"><div class="panel-heading"><h3>关节控制</h3><button class="text-button" id="home">回到初始位</button></div><div id="joint-controls"></div><div class="light-row"><label for="led">灯光亮度</label><input id="led" type="range" min="0" max="255" value="0"><button id="led-send">设置</button></div><p class="subtle">每次点击调整 5°；数值以设备反馈为准。</p></div>
+        </aside>
+      </div>
+      <div class="activity"><div class="panel-heading"><h3>正在发生什么</h3><span id="mode-state">模式：—</span></div><div id="activity-feed" aria-live="polite"><p class="subtle">等待设备事件…</p></div><p id="action-message" role="status"></p></div>
     </section>
+    <section class="catalog" aria-label="18 个互动项目">
+      <div class="catalog-heading"><div><div class="eyebrow">CHOOSE YOUR EXPERIMENT</div><h2>从好奇，开始下一步。</h2></div><p>从简单到复杂 · 每个项目都有独立验收手册</p></div>
+      <div class="catalog-toolbar"><div id="filters" role="group" aria-label="项目分类"><button class="active" data-filter="all">全部 18</button><button data-filter="basic">感知与控制</button><button data-filter="creative">创作与编程</button><button data-filter="advanced">进阶探索</button></div><label class="search-box"><span>⌕</span><input id="search" type="search" placeholder="寻找一个实验" aria-label="搜索实验"></label></div>
+      <div class="project-grid" id="project-grid"></div><p id="no-results" hidden>没有找到匹配项目。</p>
+    </section>
+    <footer><span>RoArm-M2 · 实体机器人实验室</span><span>识别、连接与运行结果均来自设备反馈</span><a href="/manuals/README.md" target="_blank" rel="noopener">操作与验收手册 ↗</a></footer>
   </main>
-  <script>
-    // Re-open MJPEG after disconnect and rediscovery, without depending on videoN.
-    const camera = document.getElementById('camera');
-    let live = false;
-    function resetVideo() { camera.removeAttribute('src'); live = false; }
-    async function updateCamera() {
-      try {
-        const response = await fetch('/status', {cache: 'no-store', signal: AbortSignal.timeout(4000)});
-        if (!response.ok) throw new Error('HTTP ' + response.status);
-        const s = await response.json();
-        document.getElementById('status').textContent = s.ready ?
-          `在线 · ${s.width} × ${s.height} · ${s.fps} 帧/秒 · ${s.device}` : '等待摄像头：' + s.error;
-        camera.hidden = !s.ready;
-        document.getElementById('empty').hidden = s.ready;
-        if (s.ready && !live) { camera.src = '/stream.mjpg?t=' + Date.now(); live = true; }
-        if (!s.ready) resetVideo();
-      } catch (e) {
-        document.getElementById('status').textContent = '无法连接视频服务';
-        resetVideo(); camera.hidden = true; document.getElementById('empty').hidden = false;
-      }
-    }
-    camera.onerror = resetVideo;
-    document.getElementById('reconnect').onclick = () => { resetVideo(); updateCamera(); };
-    updateCamera(); setInterval(updateCamera, 2000);
-
-    const arm = document.getElementById('arm');
-    document.getElementById('stop').onclick = () => {
-      if (arm.contentWindow.stopArm) arm.contentWindow.stopArm(true);
-      else document.getElementById('arm-status').textContent = '控制页面未连接，无法发送停止，请检查机械臂网络';
-    };
-    document.getElementById('reload-arm').onclick = () => {
-      arm.contentWindow.stopArm?.();
-      arm.src = '/arm/';
-    };
-    arm.onload = () => {
-      // The adapter reports native requests; an HTML proxy error is visible here too.
-      if (!arm.contentWindow.stopArm) document.getElementById('arm-status').textContent = '机械臂连接失败，请检查网络后重载';
-    };
-    window.addEventListener('message', event => {
-      if (event.origin === location.origin && event.source === arm.contentWindow && event.data?.armStatus)
-        document.getElementById('arm-status').textContent = event.data.armStatus;
-    });
-    window.addEventListener('blur', () => { if (!document.hasFocus()) arm.contentWindow.stopArm?.(); });
-    window.addEventListener('pagehide', () => arm.contentWindow.stopArm?.());
-    document.addEventListener('visibilitychange', () => { if (document.hidden) arm.contentWindow.stopArm?.(); });
-  </script>
 </body>
 </html>

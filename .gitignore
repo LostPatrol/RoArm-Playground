@@ -14,3 +14,9 @@ __pycache__/
 /rk3588/system-test/
 # Device-specific modules/firmware remain local; see docs/development.md.
 /rk3588/rtl8822cu-5.10.198.tar.gz
+# Downloaded models and runtime recordings are installed by documented scripts.
+/models/
+/rk3588/models/
+/rk3588/playground-data/
+# ESP32 reference firmware uses a local-only Wi-Fi configuration.
+/firmware/esp32_imu/config.h

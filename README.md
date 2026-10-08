@@ -1,23 +1,30 @@
-<!-- 项目入口：功能边界、目录、开发验证及 RK3588 部署入口。 -->
+<!-- 项目入口：task02串口Playground、真实验收边界、开发与部署；2026-10-09。 -->
 # RoArm-Playground
 
-基于 RoArm-M2 与 RK3588 的机械臂互动实验项目，用于面向初中生的 AI 与 Agent Vibe Coding 演示。当前实现无线视频、网页控制和实机测试，把 USB 摄像头预览、机械臂原生控制页面和真实关节反馈放在同一页面。
+基于 RoArm-M2 与 RK3588 的机械臂互动实验项目，用于面向初中生的 AI 与 Agent Vibe Coding 演示。当前统一 Playground 提供18项演示入口、USB摄像头预览、真实关节反馈和三维几何示意。打开 `http://<RK3588地址>:8080/`，控制链路为浏览器/上位机 → Wi-Fi → RK3588 → USB串口 → 机械臂。
+
+使用入口：[Playground与18份验收手册](docs/playground/README.md)、[当前真实状态](docs/playground/status.md)、[部署复现](docs/playground/deployment.md)、[集中待处理事项](docs/playground/blockers.md)。软件实现、样本推理、动作注入和真人互动分别验收。
 
 ## 当前功能
 
 - USB 摄像头动态发现、MJPEG 视频、快照及断线重试。
-- 同源代理机械臂原生页面与指令，保留角度、坐标、LED 等原生入口。
-- 按键请求串行化、松键/失焦停车、页面退出时逐轴停止持续运动。
+- USB串口关节控制、LED、统一模式切换、动作取消与实测姿态保持。
+- 人脸/颜色/ArUco/物品检测、框选跟踪、固定视角找不同与全景拍摄。
+- 示教回放、图形化动作编程、真实反馈三维示意、现场Agent改规则入口。
+- 板端Vosk中文语音和拍手worker由网页自动启动，停止/切换时关闭麦克风；上位机MediaPipe手势与猜拳。
+- 真正的Qwen1.5B量化CPU导演：自然语言生成有界动作预览，明确确认后执行。
 - RTL8822CU USB 模式切换、systemd/udev 配置及设备诊断。
 - 只读系统检查与有限范围运动复测，保存真实反馈和图像。
 
-四轴已实测能运动；底座、肩、肘仍存在到位误差。本项目后续普通场景不以高精度定位为要求。ROS 2 集成、视觉抓取、语音与 IMU 随动尚未实现，详见 [实测基线](docs/baseline.md) 和 [演示方向](docs/scenarios.md)。
+四轴、颜色跟随、回放、全景与CPU导演已有实体证据，板端Vosk真实中文样本识别成功；18项现场验收尚未全部完成。真人口令、手势/拍手、教室噪声、4060/CUDA与冷启动仍需测试。黑泡沫已有观察/识别与抓取尝试入口，尚无夹起离桌证据；ESP32＋IMU只有软件接口和模拟输入，二者标为“正在开发”。ROS 2未集成，网页不依赖ROS。机械臂存在到位误差，普通演示不以高精度为要求。
 
 ## 目录
 
 | 路径 | 用途 |
 |---|---|
 | `rk3588/` | 视频与控制服务、部署脚本、USB/无线诊断和运动测试 |
+| `host/` | 手势、音频worker及本地LLM导演 |
+| `scripts/` | 固定版本与SHA256的视觉/互动模型下载 |
 | `tests/` | 本机模拟测试，不向实体机械臂发送指令 |
 | `docs/` | 开发、公开仓库范围与实测基线 |
 
@@ -27,13 +34,14 @@
 
 ## 本机开发
 
-已使用 Ubuntu 24.04、系统 OpenCV/NumPy；ROS 2 Jazzy 是本机现有环境，当前网页服务不依赖 ROS。
+优先支持Ubuntu 24.04 / Python 3.12演示笔记本。基础服务可使用系统OpenCV/NumPy；完整上位机互动环境另安装固定依赖，当前本机项目venv为OpenCV contrib4.11/NumPy1.26.4，设备仍保留OpenCV4.8/NumPy1.24。详见[上位机与音频说明](docs/playground/host.md)。
 
 ```sh
 sudo apt-get install python3-venv python3-opencv python3-numpy
 sh rk3588/bootstrap_python.sh
-.venv/bin/python -B tests/test_camera_server.py
+.venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
 node tests/test_arm_adapter.js
+node --check rk3588/playground.js
 ```
 
 Node.js 仅用于 JavaScript 模拟测试，不是设备运行依赖。依赖与公开文件范围见 [开发说明](docs/development.md)。
@@ -44,4 +52,4 @@ Node.js 仅用于 JavaScript 模拟测试，不是设备运行依赖。依赖与
 
 完整步骤见 [RK3588 部署与复测](rk3588/README.md)。部署脚本支持目标 IP 与 `ROARM_SSH_KEY`；首次安装先创建设备 Python 环境。设备特定驱动二进制包保留在本地，公开仓库不携带该归档。
 
-网页“停止持续运动”针对 T123；断网时无法保证请求送达，也不能代替固件任务或硬件急停。运动复测脚本会实际驱动机械臂，运行前确认现场空间并避免多个控制来源同时操作。
+网页停止会取消程序、终止持续运动并尝试保持实测姿态；断网或物理连接中断时无法保证送达。历史HTTP运动复测脚本保留作实验记录，当前现场验收使用Playground手册，避免多个控制来源同时操作。

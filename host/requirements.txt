@@ -1,0 +1,9 @@
+# Ubuntu 24.04 / Python 3.12 host only; never install this into the RK camera venv.
+numpy==1.26.4
+mediapipe==0.10.21
+opencv-contrib-python==4.11.0.86
+jax==0.7.1
+jaxlib==0.7.1
+scipy==1.17.1
+protobuf==4.25.9
+vosk==0.3.45

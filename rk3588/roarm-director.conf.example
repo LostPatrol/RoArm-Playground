@@ -1,0 +1,4 @@
+# Optional laptop LLM endpoint: copy into roarm-camera.service.d/director.conf.
+[Service]
+ExecStart=
+ExecStart=/opt/roarm-camera/.venv/bin/python /opt/roarm-camera/camera_server.py --data-dir /var/lib/roarm-playground --director-url http://LAPTOP-IP:8081/v1 --director-model roarm-director

@@ -108,8 +108,10 @@ class IntegrationTests(unittest.TestCase):
     def test_native_routes_and_combined_page(self):
         status, body = self.request('/')
         self.assertEqual(status, 200)
-        self.assertIn(b'src="/arm/"', body)
-        self.assertIn(b'/stream.mjpg', body)
+        self.assertIn(b'/playground.js', body)
+        self.assertIn(b'id="camera"', body)
+        self.assertEqual(self.request('/playground.js')[0], 200)
+        self.assertIn(b'/stream.mjpg', self.request('/playground.js')[1])
         self.assertEqual(self.request('/arm-adapter.js')[0], 200)
         for page in ('/arm/', '/arm/horiDrag', '/arm/vertDrag'):
             status, body = self.request(page)

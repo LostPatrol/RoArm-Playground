@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""USB camera preview and same-origin access to the arm's native control UI."""
+"""USB video and same-origin playground API; demo control uses the USB serial link."""
 
 import argparse
 import json
 import logging
 import re
+import signal
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -17,6 +19,8 @@ import cv2
 
 
 ASSETS = Path(__file__).resolve().parent
+# A source checkout stores laptop modules beside rk3588; deployment keeps them here.
+sys.path.insert(0, str(ASSETS.parent))
 # Native firmware serves these pages and endpoints, with no external resources.
 ARM_PATHS = {'/', '/horiDrag', '/vertDrag', '/js', '/getDevInfo'}
 # Never expose reboot, flash/NVS reset or boot mission reset through this UI.
@@ -203,6 +207,30 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == '/':
                 self.respond(200, 'text/html; charset=utf-8', (ASSETS / 'control.html').read_bytes())
+            elif path in ('/playground.js', '/playground.css'):
+                kind = 'text/javascript' if path.endswith('.js') else 'text/css'
+                self.respond(200, kind + '; charset=utf-8', (ASSETS / path[1:]).read_bytes())
+            elif path == '/api/state':
+                self.respond(200, 'application/json; charset=utf-8',
+                             json.dumps(self.server.playground.state(), ensure_ascii=False).encode())
+            elif path.startswith('/artifacts/'):
+                name = path[len('/artifacts/'):]
+                if Path(name).name != name or not name.endswith('.jpg'):
+                    self.respond(404, 'text/plain', b'Not found')
+                else:
+                    file = self.server.playground.artifacts / name
+                    self.respond(200 if file.is_file() else 404, 'image/jpeg',
+                                 file.read_bytes() if file.is_file() else b'Not found')
+            elif path.startswith('/manuals/'):
+                relative = Path(path[len('/manuals/'):])
+                manual_root = ASSETS / 'docs' / 'playground'
+                if not manual_root.is_dir():
+                    manual_root = ASSETS.parent / 'docs' / 'playground'
+                file = manual_root / relative
+                if '..' in relative.parts or not relative.name.endswith('.md') or not file.is_file():
+                    self.respond(404, 'text/plain', b'Not found')
+                else:
+                    self.respond(200, 'text/plain; charset=utf-8', file.read_bytes())
             elif path == '/arm-adapter.js':
                 self.respond(200, 'text/javascript; charset=utf-8', (ASSETS / 'arm_adapter.js').read_bytes())
             elif path == '/arm':
@@ -211,7 +239,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header('Content-Length', '0')
                 self.end_headers()
             elif path.startswith('/arm/'):
-                self.respond(*self.server.arm.get(path[4:], urlsplit(self.path).query))
+                if self.server.arm is None:
+                    self.respond(410, 'text/plain; charset=utf-8',
+                                 '已迁移至串口 Playground，请使用首页'.encode())
+                else:
+                    self.respond(*self.server.arm.get(path[4:], urlsplit(self.path).query))
             elif path in ('/status', '/health'):
                 self.respond(200, 'application/json; charset=utf-8',
                              json.dumps(self.server.camera.status(), ensure_ascii=False).encode())
@@ -245,6 +277,35 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
             pass
 
+    def do_POST(self):
+        path = urlsplit(self.path).path
+        try:
+            length = int(self.headers.get('Content-Length', '0'))
+            if not 0 < length <= 65536:
+                raise ValueError('JSON 请求大小应在 1..65536 字节')
+            data = json.loads(self.rfile.read(length))
+            if not isinstance(data, dict):
+                raise ValueError('请求应为 JSON 对象')
+            if path == '/api/action':
+                result = self.server.playground.handle_action(data)
+            elif path == '/api/perception':
+                result = self.server.playground.perception(data)
+            else:
+                self.respond(404, 'application/json', b'{"ok":false,"error":"Unknown API"}')
+                return
+            body = dict(ok=True, result=result)
+            status = 200
+        except (ValueError, TypeError, KeyError) as exc:
+            status, body = 400, dict(ok=False, error=str(exc))
+        except Exception as exc:
+            logging.exception('Playground action failed')
+            status, body = 503, dict(ok=False, error=str(exc))
+        try:
+            self.respond(status, 'application/json; charset=utf-8',
+                         json.dumps(body, ensure_ascii=False).encode())
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def log_message(self, fmt, *args):
         if not self.path.startswith(('/status', '/health')):
             logging.info(fmt, *args)
@@ -258,6 +319,12 @@ def main():
     parser.add_argument('--width', type=int, default=640)
     parser.add_argument('--height', type=int, default=480)
     parser.add_argument('--fps', type=int, default=15)
+    parser.add_argument('--serial-device', help='ESP32 /dev/serial/by-id path; discover one CP2102N by default')
+    parser.add_argument('--data-dir', default=str(ASSETS / 'playground-data'))
+    parser.add_argument('--model-dir', default=str(ASSETS / 'models'))
+    parser.add_argument('--director-url', default='', help='Local laptop OpenAI-compatible LLM /v1 URL')
+    parser.add_argument('--director-model', default='qwen2.5-1.5b-instruct')
+    parser.add_argument('--audio-device', default='hw:CARD=UQ212,DEV=0')
     parser.add_argument('--arm-url', default='http://192.168.112.156',
                         help='Configured arm HTTP origin; only known native routes are proxied')
     args = parser.parse_args()
@@ -271,9 +338,24 @@ def main():
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     server.camera = Camera(args)
-    server.arm = ArmProxy(args.arm_url)
+    from arm_serial import ArmController, SerialTransport
+    from playground import Playground
+    controller = ArmController(SerialTransport(args.serial_device))
+    server.arm = None  # Runtime commands no longer traverse ESP32 Wi-Fi.
+    server.playground = Playground(server.camera, controller, args.data_dir, args.model_dir,
+                                   args.director_url, args.director_model,
+                                   local_server='http://127.0.0.1:%s' % args.port,
+                                   audio_device=args.audio_device)
     logging.info('Camera service listening on %s:%s', args.host, args.port)
-    server.serve_forever()
+    # systemd termination cancels the mode and holds the measured pose before exit.
+    signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=server.shutdown, daemon=True).start())
+    try:
+        server.serve_forever()
+    finally:
+        try:
+            server.playground.stop()
+        finally:
+            controller.close()
 
 
 if __name__ == '__main__':
