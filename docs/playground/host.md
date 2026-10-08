@@ -1,7 +1,7 @@
-<!-- 当前自动板端音频、上位机手势与CPU导演：部署、实测与验收边界；2026-10-09。 -->
+<!-- 上位机模型管理服务、板端语音口令词表与真实CPU导演的安装及验收边界；2026-10-09。 -->
 # 手势、语音、拍手与本地导演
 
-默认支持另一台Ubuntu 24.04 / Python 3.12笔记本。手势在上位机读取RK3588 `/snapshot.jpg`；中文语音和拍手默认由网页自动启动板端worker，读取UQ212麦克风，无需再开终端重复启动。停止、切换模式或转为手动关节控制会结束旧worker及arecord；切到另一音频模式时由新worker接管麦克风。
+默认支持另一台Ubuntu 24.04 / Python 3.12笔记本。手势在上位机读取RK3588 `/snapshot.jpg`；中文语音和拍手默认由网页自动启动板端worker，读取UQ212麦克风，无需再开终端重复启动。停止或切换到其他模式会结束旧音频worker及arecord；切到另一音频模式时由新worker接管麦克风。
 
 这些功能共享 Playground 的 `/api/state`、`/api/perception`、`/api/action`。同一时刻只让前端选中的模式产生动作。`--dry-run` 完全不发 POST，也不读取模式；可用本地图片/WAV验真实模型。
 
@@ -27,6 +27,27 @@ bash scripts/fetch_interaction_models.sh all
 | Qwen2.5-1.5B-Instruct Q4_K_M | 官方GGUF仓库提交 `91cad51170dc346986eccefdc2dd33a9da36ead9`，约1.12GB | `6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e` |
 
 来源：[MediaPipe Python指南](https://developers.google.com/edge/mediapipe/solutions/vision/gesture_recognizer/python)、[Vosk官方模型](https://alphacephei.com/vosk/models)、[Qwen官方GGUF](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF)。
+
+## 网页发现与加载本机模型
+
+上位机安装好环境、模型并构建导演后，执行一次：
+
+```bash
+bash host/build_director.sh cpu
+bash host/install_host_service.sh
+```
+
+这会创建用户服务 `roarm-host.service`，登录时自动启动并监督8082管理服务；同时加载8081真实导演模型。手势/猜拳及导演页面的“尝试连接/加载本机模型”通过RK后端访问浏览器所在电脑的8082端口，读取已安装模型并启动对应worker。不会在RK3588安装MediaPipe，也不会仅因加载worker就改变机械臂模式。浏览器在其他电脑/手机时，可在页面指定安装工程的上位机地址。该机制需要电脑预先安装此小服务，不能从一个网页凭空运行不存在的本机软件。
+
+管理接口 `GET /api/status` 返回两种worker的 `stopped/loading/ready`、模型路径、缺失依赖及安装命令；`POST /api/start` 接收 `{"worker":"gestures","server":"http://RK-IP:8080"}` 或 `{"worker":"director"}`。启动返回loading后可继续查询；导演ready来自真实 `/health`，手势ready来自MediaPipe加载成功标记。模型缺失时返回真实缺项，手势文件放 `models/gesture_recognizer.task`，导演文件放 `models/qwen2.5-1.5b-instruct-q4_k_m.gguf`，来源与SHA见上表。服务不在HTTP请求里自动下载模型或改系统依赖。
+
+```bash
+systemctl --user status roarm-host.service --no-pager
+journalctl --user -u roarm-host.service -n 30 --no-pager
+curl --noproxy '*' http://127.0.0.1:8082/api/status
+```
+
+进程日志在 `agent/codex/host-manager/`。RK重启期间手势worker等待相机恢复，其他异常退出由manager按至少5秒的启动间隔重新加载；管理服务异常退出由systemd重启。用户服务默认以登录为启动边界，未验收未登录时自动启动。首次模型加载和CPU导演冷推理需要等待，不能把PID存活当成模型就绪。仅在课堂局域网开放8081/8082。
 
 ## 手势与猜拳
 
@@ -64,7 +85,11 @@ arecord -l
 .venv/bin/python -m host.worker --mode clap --audio-device default --dry-run
 ```
 
-语音使用 Vosk 真正的中文声学/解码模型，把结果发送为 `{"action":"speech","text":"向左看"}`；它不是只按字符串返回预设识别结果。原始识别去掉中文词间空格，只有解码成完整片段后发出。可识别的运动口令由后端固定映射决定，未知内容不会交给通用模型直接执行。前端模式分别是 `voice`、`clap`。
+语音使用 Vosk 真正的中文声学/解码模型；live麦克风默认启用口令词表（`--speech-grammar auto`），WAV回归默认使用完整词典。口令为：停止、停下、找人、打招呼、向左、左转、向右、右转、抬头、低头、张开、打开夹爪、合拢、关闭夹爪、灯亮、开灯、灯灭、关灯。建议一次说一个完整口令，停顿等到识别结束。`--speech-grammar full` 可显式恢复自由语音解码。
+
+小模型支持真实动态词表；`向左` 和 `夹爪` 本身不在模型词典中，因此grammar分别写作 `向 左`、`夹 爪`，已逐词用真实模型验证无缺词。词表保留 `[unk]`，避免将词表外语音强行当成动作；解码去空格后，必须完整匹配口令且平均真实词置信度≥0.6才发 `{"action":"speech","text":"向左"}`。词表不是按字符串冒充语音模型，运动映射依然在后端。模型置信度并非实际正确率；词表不能修复缺失的声音、混响或信噪比。
+
+音频心跳包含 `audio_rms/audio_dbfs/audio_peak/clipped_fraction`；每次解码发布真实 `text/confidence/accepted`，包括拒绝的片段，帮助区分音量不足、削顶和解码错误。没有偷偷提升硬件增益或用关键词计划替代模型。[Vosk官方动态词表示例](https://github.com/alphacep/vosk-api/blob/master/python/example/test_words.py)说明该接口；[官方模型列表](https://alphacephei.com/vosk/models)也表明small-cn是轻量模型，不代表教室远场已验收。
 
 拍手采用16kHz PCM的短时音量上升检测，有0.6秒间隔与持续音量边沿判定，**没有声称使用神经拍手分类器**。`--clap-threshold 0.10` 可按现场麦克风增益调整。敲桌、大声喊叫也可能触发，需要课堂噪声实测。live麦克风默认丢弃启动预热0.5秒（`--audio-warmup`可显式调整），WAV完整读取；音频worker每2秒发布独立 `kind=speech/clap,worker_status=running` 心跳，即使演示模式未激活也能区分在线与未连接，dry-run不发布心跳。
 
@@ -99,8 +124,10 @@ systemd使用DynamicUser，Vosk导入时需要解析用户HOME；首次托管启
 
 ```bash
 .venv/bin/python -m host.audio_probe /absolute/path/recording.wav \
-  --model /absolute/path/vosk-model-small-cn-0.22
+  --model /absolute/path/vosk-model-small-cn-0.22 --skip-seconds 0.5
 ```
+
+`audio_probe`同时报告每声道幅度和双声道相关性，避免只看下混后的平均值遗漏反相抵消。当前UQ212仍为Mic62%/+11dB；2026-10-09额外5秒环境录音排除前0.5秒后为−44.16dBFS、0削顶，双声道相关性0.944，未发现这段音频的反相抵消。该段没有指定口令/讲话距离，不能据此证明远场收音正常，也无法确诊是裸露麦克风硬件还是声学模型导致。不要仅因无海绵套认定它是误识别原因；提高增益同样会放大噪声，应先录制相同口令的近/远距离样本并对比幅度与解码。已用真实command grammar解码公开非口令中文样本得到 `[unk]`并拒绝动作，但真人远场识别提升仍需现场样本验证。
 
 ## 本地LLM导演
 
@@ -113,7 +140,7 @@ bash host/run_director.sh cpu
 .venv/bin/python -m host.director '先亮灯，再向左转十度，等待一秒，然后打招呼'
 ```
 
-构建固定 llama.cpp `b4514` / `ec7f3ac9ab33e46b136eb5ab6a76c4d81f57c7f1`。源码/构建过程放在 `agent/codex/llama.cpp-b4514`；CPU构建关闭 `GGML_NATIVE`，可在另一台x86笔记本重建，默认6线程、2048上下文。约1.12GB量化模型给16GB内存笔记本保留空间；实际4060笔记本性能尚未测试。
+构建固定 llama.cpp `b4514` / `ec7f3ac9ab33e46b136eb5ab6a76c4d81f57c7f1`。源码/构建过程放在 `agent/codex/llama.cpp-b4514`；CPU构建关闭 `GGML_NATIVE`，可在另一台x86笔记本重建，默认6线程、4096上下文（`DIRECTOR_CONTEXT`可覆盖）。约1.12GB量化模型给16GB内存笔记本保留空间；实际4060笔记本性能尚未测试。
 
 可选GPU方案需要目标机器已有兼容NVIDIA驱动和支持Ada架构的CUDA编译器（CUDA 11.8或更新）：
 
@@ -144,13 +171,15 @@ DIRECTOR_HOST=0.0.0.0 bash host/run_director.sh cpu
 
 修正后的真实CPU回归5条全部得到正确动作/角度：左转10度后致意、右转15度＋张开10度、左转5度＋合拢5度、向右看8度等待2秒、左转12度关灯。首条8.555秒，其余2.170—2.678秒。该成绩仅对应这5条基础指令，没有发送任何真机运动。
 
+后续用户截图显示连接拒绝，检查发现原手工启动的模型进程已经不存在，现以用户systemd管理器持续提供服务。重新连接后也发现旧prompt对“先看看左边，再回到中间，最后亮灯打招呼”生成12步无关关节动作且漏掉亮灯；这不是连接修复就能掩盖的语义失败。加入多动作示例、明确不得添加额外关节动作、打招呼用greet一步、同句返回中间仅撤销刚才水平转动后，真实Qwen回归7条全部正确：截图指令4步为底座+10/−10、亮灯、致意；另一未见过的“关灯、右转6度、回原方向、致意”也正确；上述5条旧方向回归保持通过。冷首条12.353秒，其余2.076—3.686秒。仅预览、没有自动发送其动作；7条通过仍不代表任意中文语义可靠，独立要求回到未知绝对位置仍没有当前场景事实。
+
 ## 运行检查与证据
 
 ```bash
 .venv/bin/python -m unittest tests.test_host_worker -v
-bash -n scripts/fetch_interaction_models.sh host/build_director.sh host/run_director.sh
+bash -n scripts/fetch_interaction_models.sh host/build_director.sh host/run_director.sh host/install_host_service.sh
 ```
 
-单元测试检查模式切换后不发旧动作、dry-run没有网络写入、手势去重、PCM双声道下混、持续大音量不重复拍手、麦克风启动瞬态丢弃与采音进程清理、LLM接口预览及schema边界、模型方向到物理符号的绑定。它们使用本地模拟HTTP服务，不冒充真模型或真机联动。
+单元测试检查模式切换后不发旧动作、dry-run没有网络写入、手势去重、PCM双声道下混、持续大音量不重复拍手、麦克风启动瞬态丢弃与采音进程清理、LLM接口预览及schema边界、模型方向到物理符号的绑定、真实解码未知/低置信口令拒绝、削顶诊断、管理器缺模型不启动/一个模型只启动一次/实际就绪标记/故障恢复保留RK地址。它们使用本地模拟HTTP服务，不冒充真模型或真机联动。
 
-真实离线模型证据保存在本开发机 `agent/codex/gesture-*.json`、`asr-public-zh-result.json`、`director-real-*.json` 与 `director-llama-cpu.log`；不会作为运行依赖部署。网络/摄像头/arecord出错时 worker 清晰退出，处理设备故障后重新启动即可。
+真实离线模型证据保存在本开发机 `agent/codex/gesture-*.json`、`asr-public-zh-result.json`、`director-real-*.json` 与 `director-llama-cpu.log`；此次管理器/恢复/7条导演回归另在 `agent/codex/task03/`，不会作为运行依赖部署。管理器API实际加载MediaPipe和CPU导演均ready；manual模式下只终止自身手势worker后，1.052秒出现新PID并再次模型ready，未发送动作POST。使用独立命令启动的worker异常退出仍需手动恢复；托管worker由manager自动恢复。

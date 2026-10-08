@@ -14,6 +14,9 @@ import subprocess
 import sys
 import threading
 import time
+from urllib.parse import urlsplit
+from urllib.error import HTTPError
+from urllib.request import ProxyHandler, Request, build_opener
 
 import cv2
 import numpy as np
@@ -121,6 +124,7 @@ class Playground:
         self.last_motion = self.last_seen = self.last_trigger = 0
         self.scan_direction = 1
         self.face_greeted = False
+        self.last_greet = self.last_target_light = 0
         self.clap_count = 0
         self.client_sequences = {}
         self.event('Playground 已启动，等待串口实测反馈')
@@ -204,6 +208,8 @@ class Playground:
             self._stop_audio()
             with self.lock:
                 self.mode = 'manual'
+                self.vision = dict(detections=[], width=self.vision.get('width', 640),
+                                   height=self.vision.get('height', 480))
                 if self.grasp.get('status') == 'attempting':
                     self.grasp.update(status='developing', message='抓取尝试已取消，未判定成功')
             if hold:
@@ -338,15 +344,77 @@ class Playground:
     def perception(self, data):
         with self.lock:
             kind = data.get('kind', 'unknown')
-            self.workers[kind] = dict(data, updated=time.time())
+            self.workers[kind] = dict(self.workers.get(kind, {}), **data, updated=time.time())
             if kind == 'hands':
                 self.host.update(data, updated=time.time())
         return dict(received=True)
 
+    def _follow(self, mode, options, targets, token, now):
+        """Refresh proportional image-centering goals without waiting for joint arrival.
+
+        Goals always start at actual feedback; 100 ms updates and larger servo speed
+        replace the old 600 ms / tiny-step movement. A greeting owns motion until it ends.
+        """
+        if self.job and self.job.is_alive():
+            return
+        with self.action_lock:
+            if mode != self.mode or token is not self.cancel or token.is_set():
+                return
+            # Manual joint control keeps mode/token for perception, but disables
+            # motion. Re-read that flag after waiting for the same action lock.
+            if not self.options.get('motion', True) or (self.job and self.job.is_alive()):
+                return
+            if targets:
+                self.last_seen = now
+            elif mode == 'face' and now - self.last_seen > 2:
+                self.face_greeted = False
+            if now - self.last_motion < .10:
+                return
+            state = self.arm.snapshot()
+            if not state['connected']:
+                return
+            if targets:
+                target = max(targets, key=lambda item: item['w'] * item['h'])
+                if mode in ('face', 'markers') and now - self.last_target_light > 1:
+                    self.arm.led(160)
+                    self.last_target_light = now
+                horizontal, vertical = target['cx'] - .5, target['cy'] - .5
+                centered = abs(horizontal) <= .06 and abs(vertical) <= .08
+                # Positive base turns left; positive elbow tilts the mounted camera down.
+                for joint, error, gain, limit, sign, low, high in (
+                        ('base', horizontal, 24, 8, -1, -175, 175),
+                        ('elbow', vertical, 18, 6, float(options.get('pitch_direction', 1)), 5, 170)):
+                    if joint == 'elbow' and not options.get('pitch', True):
+                        continue
+                    angle = state['joints'].get(joint)
+                    if angle is not None and abs(error) > .04:
+                        angle = max(low, min(high, angle + sign * max(-limit, min(limit, error * gain))))
+                        self.arm.move(joint, angle=angle, speed=500)
+                if (mode == 'face' and centered and options.get('greet', True)
+                        and not self.face_greeted and now - self.last_greet > 8):
+                    self.face_greeted = True
+                    self.last_greet = now
+                    self.event('找到观众，亮灯并点头致意；之后继续识别与跟随')
+                    # _start_job defaults to manual: explicitly retain face mode and
+                    # perception, otherwise the first greeting permanently stops detection.
+                    self._start_job('人脸致意', self._greet, mode='face')
+            elif mode in ('face', 'markers') and now - self.last_seen > 1:
+                angle = state['joints'].get('base')
+                if angle is not None:
+                    low, high = float(options.get('scan_min', -60)), float(options.get('scan_max', 60))
+                    if not -175 <= low < high <= 175:
+                        raise ValueError('扫描范围须在 -175..175 度且起点小于终点')
+                    if angle >= high:
+                        self.scan_direction = -1
+                    elif angle <= low:
+                        self.scan_direction = 1
+                    self.arm.move('base', angle=max(low, min(high, angle + self.scan_direction * 6)), speed=500)
+            self.last_motion = now
+
     def _vision_loop(self):
         previous_sequence = -1
         while True:
-            time.sleep(.12)
+            time.sleep(.025)
             with self.lock:
                 mode, options = self.mode, dict(self.options)
                 token = self.cancel
@@ -359,57 +427,22 @@ class Playground:
                 previous_sequence = self.camera.sequence
                 with self.vision_lock:
                     result = self.vision_engine.process(image, mode, options)
+                now = time.monotonic()
                 with self.lock:
                     if mode != self.mode or token is not self.cancel or token.is_set():
                         continue
                     self.vision = result
-                now = time.monotonic()
+                    if result.get('detections'):
+                        self.last_seen = now
                 targets = result.get('detections', [])
-                if targets:
-                    self.last_seen = now
                 # Perception-only modes never move the arm automatically.
                 if mode in ('objects', 'foam') or not options.get('motion', True):
                     continue
-                if now - self.last_motion < .6:
-                    continue
-                with self.action_lock:
-                    if mode != self.mode or token is not self.cancel or token.is_set():
-                        continue
-                    if targets:
-                        target = max(targets, key=lambda item: item['w'] * item['h'])
-                        if mode in ('face', 'markers'):
-                            self.arm.led(160)
-                        error = target['cx'] - .5
-                        if abs(error) > .12:
-                            state = self.arm.snapshot()
-                            angle = state['joints'].get('base')
-                            if angle is not None:
-                                # Firmware positive base is left; a right target needs a negative step.
-                                angle = max(-175, min(175, angle - max(-5, min(5, error * 12))))
-                                self.arm.move('base', angle=angle)
-                        elif mode == 'face' and options.get('greet', True) and not self.face_greeted:
-                            self.face_greeted = True
-                            self.event('找到观众，亮灯并点头致意')
-                            self._start_job('人脸致意', self._greet)
-                        elif mode == 'markers':
-                            self.event('找到标记：' + str(target.get('id', target['label'])))
-                            with self.lock:
-                                self.mode = 'manual'
-                    elif mode in ('face', 'markers') and now - self.last_seen > 1:
-                        state = self.arm.snapshot()
-                        angle = state['joints'].get('base')
-                        if angle is not None:
-                            low, high = float(options.get('scan_min', -60)), float(options.get('scan_max', 60))
-                            if not -175 <= low < high <= 175:
-                                raise ValueError('扫描范围须在 -175..175 度且起点小于终点')
-                            if angle >= high:
-                                self.scan_direction = -1
-                            elif angle <= low:
-                                self.scan_direction = 1
-                            self.arm.move('base', angle=max(low, min(high, angle + self.scan_direction * 5)))
-                    self.last_motion = now
+                self._follow(mode, options, targets, token, now)
             except Exception as exc:
                 with self.lock:
+                    if mode != self.mode or token is not self.cancel or token.is_set():
+                        continue
                     self.vision = dict(detections=[], error=str(exc), width=640, height=480)
                 if time.monotonic() - self.last_trigger > 3:
                     self.event(str(exc), 'error')
@@ -525,7 +558,7 @@ class Playground:
         """Reject a client's earlier start arriving after its newer stop request."""
         client, sequence = data.get('_ui_client'), data.get('_ui_sequence')
         # Long model inference cannot delay a concurrent stop; it has no motion.
-        if data.get('action') == 'director':
+        if data.get('action') in ('director', 'host_connect'):
             return self.action(data)
         with self.action_lock:
             if client is not None:
@@ -539,6 +572,47 @@ class Playground:
     def action(self, data):
         """All public actions; called by browser and laptop workers alike."""
         action = data.get('action')
+        if action == 'camera_config':
+            if self.job and self.job.is_alive():
+                raise RuntimeError('请先停止动作程序，再切换摄像头规格')
+            result = self.camera.configure(data)
+            self.stop(hold=self.arm.snapshot()['connected'])
+            self.event('摄像头规格已提交，重新采集期间识别暂停')
+            return result
+        if action == 'host_connect':
+            # The user's browser machine hosts the optional worker/model manager.
+            host_url = str(data.get('host_url') or 'http://%s:8082' % data.get('_client_host', '127.0.0.1')).rstrip('/')
+            parsed = urlsplit(host_url)
+            if parsed.scheme != 'http' or not parsed.hostname or parsed.path or parsed.username or parsed.query:
+                raise ValueError('上位机地址应为 http://IP:8082')
+            worker = data.get('worker', 'gestures')
+            if worker not in ('gestures', 'director', 'status'):
+                raise ValueError('未知上位机 worker')
+            try:
+                path = '/api/status' if worker == 'status' else '/api/start'
+                body = None if worker == 'status' else b''
+                # A loopback RK address cannot be used by a laptop worker.
+                if body is not None:
+                    server = data.get('_rk_origin') or data.get('server') or self.local_server
+                    body = json.dumps(dict(worker=worker, server=server)).encode()
+                request = Request(host_url + path, data=body, headers={'Content-Type': 'application/json'})
+                with build_opener(ProxyHandler({})).open(request, timeout=5) as response:
+                    result = json.load(response)
+            except HTTPError as exc:
+                # An installed manager reports missing models/dependencies in its body.
+                # Preserve concrete setup instructions instead of calling this a LAN outage.
+                try:
+                    result = json.load(exc)
+                except (ValueError, UnicodeError):
+                    raise RuntimeError('上位机管理服务返回 HTTP %s' % exc.code)
+            except OSError as exc:
+                raise RuntimeError('无法连接上位机8082管理服务。请在上位机项目目录运行 '
+                                   '.venv/bin/python -m host.manager --host 0.0.0.0；'
+                                   '依赖和模型安装见 /manuals/host.md。原因：%s' % exc)
+            if worker == 'director':
+                self.director_url = 'http://%s:%s/v1' % (parsed.hostname, result.get('director_port', 8081))
+            self.event('已连接上位机服务：' + worker)
+            return result
         if action == 'stop':
             connected = self.arm.snapshot()['connected']
             self.stop(hold=connected)
@@ -563,18 +637,36 @@ class Playground:
                 self._start_audio(mode)
             self.event('切换模式：' + mode)
             return dict(mode=mode)
-        if action in ('joint', 'home', 'led'):
+        if action in ('joint', 'home', 'led', 'torque', 'adaptive', 'cartesian', 'cartesian_delta', 'raw'):
             if self.job and self.job.is_alive():
                 raise RuntimeError('程序运行中，请先停止再手动控制')
             with self.action_lock:
                 if action == 'led':
                     return dict(value=self.arm.led(data.get('value', 0)))
-                if self.mode != 'manual':
+                if self.mode in ('face', 'color', 'markers', 'objects', 'track', 'foam'):
+                    # Manual motion takes precedence while image inference keeps running.
+                    if self.options.get('motion', True) and self.mode not in ('objects', 'foam'):
+                        self.options = dict(self.options, motion=False)
+                        self.event('手动控制接管运动，视觉识别继续；重新启动跟随可恢复自动运动')
+                elif self.mode != 'manual':
                     self.stop(hold=self.arm.snapshot()['connected'])
-                self.mode = 'manual'
                 if action == 'home':
-                    self.arm.pose(dict(base=0, shoulder=0, elbow=90, gripper=175))
+                    self.arm.home()
                     return dict(requested=True)
+                if action in ('torque', 'adaptive'):
+                    if type(data.get('enabled')) is not bool:
+                        raise ValueError('开关需要布尔 enabled')
+                    if action == 'torque':
+                        self.stop(hold=False)
+                    return dict(enabled=getattr(self.arm, action)(data['enabled']))
+                if action == 'cartesian':
+                    return dict(target=self.arm.cartesian(data['x'], data['y'], data['z'],
+                                data.get('t'), speed=data.get('spd', .25)))
+                if action == 'cartesian_delta':
+                    return dict(target=self.arm.cartesian_delta(data.get('axis'), data.get('delta'),
+                                speed=data.get('spd', .25)))
+                if action == 'raw':
+                    return dict(response=self.arm.raw(data.get('command', '')))
                 return dict(target=self.arm.move(data.get('joint'), data.get('angle'), data.get('delta')))
         if action == 'record':
             if self.job and self.job.is_alive():

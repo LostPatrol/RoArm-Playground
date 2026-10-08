@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -123,20 +124,87 @@ def usb_cameras():
 
 
 class Camera:
+    """One capture owner; configuration changes reopen USB capture in its thread."""
     def __init__(self, args):
         self.args = args
         self.condition = threading.Condition()
         self.frame = None
         self.sequence = 0
         self.updated = 0
+        self.configuration = dict(width=args.width, height=args.height, fps=args.fps, fourcc='MJPG')
+        self.config_file = Path(args.data_dir) / 'camera.json'
+        try:
+            saved = json.loads(self.config_file.read_text())
+            if (saved.get('fourcc') in ('MJPG', 'YUYV') and
+                    all(type(saved.get(key)) is int and saved[key] > 0 for key in ('width', 'height', 'fps'))):
+                self.configuration = saved
+        except (OSError, ValueError):
+            pass
+        self.revision = 0
+        self.modes = []
+        self.probed_device = None
         self.details = dict(device=None, width=0, height=0, fps=0,
                             error='未识别到 USB 摄像头，请接到小主机的 USB 主机口')
         threading.Thread(target=self.capture, daemon=True).start()
 
     def status(self):
         with self.condition:
-            return dict(self.details, ready=self.frame is not None and
+            return dict(self.details, configuration=dict(self.configuration), options=list(self.modes),
+                        ready=self.frame is not None and
                         time.monotonic() - self.updated < 5)
+
+    @staticmethod
+    def parse_modes(output):
+        """Offer useful bandwidth limits from enumerated USB formats, not advertised maxima."""
+        formats, fourcc, size = {}, None, None
+        for line in output.splitlines():
+            match = re.search(r"\[\d+\]: '([A-Z0-9]+)'", line)
+            if match:
+                fourcc = match.group(1)
+            match = re.search(r'Size: Discrete (\d+)x(\d+)', line)
+            if match:
+                size = tuple(map(int, match.groups()))
+            match = re.search(r'\(([\d.]+) fps\)', line)
+            if match and fourcc and size:
+                key = (fourcc, *size)
+                formats[key] = max(formats.get(key, 0), float(match.group(1)))
+        candidates = [('MJPG', 640, 480, 15), ('MJPG', 640, 480, 30),
+                      ('MJPG', 1280, 720, 15), ('MJPG', 1280, 720, 30),
+                      ('MJPG', 1920, 1080, 15), ('MJPG', 1920, 1080, 30),
+                      ('YUYV', 640, 480, 30), ('YUYV', 1280, 720, 5)]
+        return [dict(id='%s-%sx%s-%s' % item, fourcc=item[0], width=item[1],
+                     height=item[2], fps=item[3]) for item in candidates
+                if formats.get(item[:3], 0) >= item[3] - .1]
+
+    def probe(self, device):
+        """Read UVC capabilities without opening a second capture stream."""
+        try:
+            result = subprocess.run(['v4l2-ctl', '-d', device, '--list-formats-ext'],
+                                    capture_output=True, text=True, timeout=3, check=True)
+            modes = self.parse_modes(result.stdout)
+        except (OSError, subprocess.SubprocessError):
+            modes = []
+        with self.condition:
+            self.modes, self.probed_device = modes, device
+
+    def configure(self, data):
+        """Persist an enumerated setting; capture reports negotiated dimensions and measured fps."""
+        try:
+            requested = {key: data[key] for key in ('width', 'height', 'fps', 'fourcc')}
+        except KeyError:
+            raise ValueError('摄像头设置需要 width/height/fps/fourcc')
+        with self.condition:
+            if not any(all(requested[key] == mode[key] for key in requested) for mode in self.modes):
+                raise ValueError('该摄像头未公布此分辨率/帧率/格式组合')
+            self.config_file.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.config_file.with_suffix('.tmp')
+            temporary.write_text(json.dumps(requested))
+            temporary.replace(self.config_file)
+            self.configuration = requested
+            self.revision += 1
+            self.frame = None
+            self.condition.notify_all()
+        return dict(requested=requested, message='正在重新打开摄像头，请核对实际分辨率与帧率')
 
     def unavailable(self, message):
         with self.condition:
@@ -154,17 +222,23 @@ class Camera:
             for device in devices:
                 cap = None
                 try:
+                    if device != self.probed_device:
+                        self.probe(device)
+                    with self.condition:
+                        configuration, revision = dict(self.configuration), self.revision
                     cap = cv2.VideoCapture(device, cv2.CAP_V4L2)
                     if not cap.isOpened():
                         continue
-                    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.args.width)
-                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.args.height)
-                    cap.set(cv2.CAP_PROP_FPS, self.args.fps)
+                    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*configuration['fourcc']))
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, configuration['width'])
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, configuration['height'])
+                    cap.set(cv2.CAP_PROP_FPS, configuration['fps'])
                     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                     logging.info('Opened %s', device)
                     started, count = time.monotonic(), 0
                     while True:
+                        if revision != self.revision:
+                            break
                         tick = time.monotonic()
                         ok, image = cap.read()
                         if not ok:
@@ -180,15 +254,21 @@ class Camera:
                             self.updated = time.monotonic()
                             self.details = dict(device=device, width=image.shape[1],
                                                 height=image.shape[0], error='',
+                                                fourcc=''.join(chr((int(cap.get(cv2.CAP_PROP_FOURCC)) >> (8 * i)) & 255) for i in range(4)),
+                                                device_fps=round(cap.get(cv2.CAP_PROP_FPS), 2),
                                                 fps=round(count / max(.01, self.updated - started), 1))
                             self.condition.notify_all()
-                        time.sleep(max(0, 1 / self.args.fps - (time.monotonic() - tick)))
+                        time.sleep(max(0, 1 / configuration['fps'] - (time.monotonic() - tick)))
                 except Exception as exc:
                     logging.warning('%s: %s', device, exc)
                     self.unavailable(str(exc))
                 finally:
                     if cap is not None:
                         cap.release()
+                if revision != self.revision:
+                    break
+            if self.frame is not None:
+                continue
             self.unavailable('USB 摄像头暂时无法采集，正在重试')
             time.sleep(2)
 
@@ -213,6 +293,9 @@ class Handler(BaseHTTPRequestHandler):
             elif path == '/api/state':
                 self.respond(200, 'application/json; charset=utf-8',
                              json.dumps(self.server.playground.state(), ensure_ascii=False).encode())
+            elif path == '/api/camera/options':
+                self.respond(200, 'application/json; charset=utf-8',
+                             json.dumps(dict(modes=self.server.camera.status().get('options', []))).encode())
             elif path.startswith('/artifacts/'):
                 name = path[len('/artifacts/'):]
                 if Path(name).name != name or not name.endswith('.jpg'):
@@ -287,6 +370,13 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(data, dict):
                 raise ValueError('请求应为 JSON 对象')
             if path == '/api/action':
+                if data.get('action') == 'host_connect':
+                    data['_client_host'] = self.client_address[0]
+                    # Browser Host identifies the reachable RK origin for the laptop.
+                    host = self.headers.get('Host', '')
+                    if not re.fullmatch(r'[A-Za-z0-9.\-]+(?::\d+)?', host):
+                        raise ValueError('网页 Host 地址无效')
+                    data['_rk_origin'] = 'http://' + host
                 result = self.server.playground.handle_action(data)
             elif path == '/api/perception':
                 result = self.server.playground.perception(data)

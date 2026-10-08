@@ -1,8 +1,49 @@
 /* RoArm Playground: local API client, 18 experiment panels, real-feedback 3D canvas and visual programs. */
 'use strict';
+// Manufacturer clamp-mode FK in mm. Firmware XYZ origin is at the shoulder;
+// the drawing adds the 126.06 mm base pedestal only for physical geometry.
+globalThis.RoArmModel = {
+  pedestal:126.06, link2:Math.hypot(236.82,30), link3:Math.hypot(280.15,1.73),
+  points(joints) {
+    const radians=Math.PI/180, b=joints.base*radians;
+    const s=Math.PI/2-joints.shoulder*radians-Math.atan2(30,236.82);
+    const e=Math.PI/2-(joints.shoulder+joints.elbow)*radians;
+    const spatial=(r,z)=>[r*Math.cos(b),r*Math.sin(b),z+this.pedestal];
+    return [[0,0,0],spatial(0,0),spatial(this.link2*Math.cos(s),this.link2*Math.sin(s)),spatial(this.link2*Math.cos(s)+this.link3*Math.cos(e),this.link2*Math.sin(s)+this.link3*Math.sin(e))];
+  },
+  // Positive depth is farther from an eye above the stage. Rotation is orthogonal.
+  project(point, view) {
+    const [x,y,height]=point,z=height-view.center;
+    const rx=x*Math.cos(view.yaw)-y*Math.sin(view.yaw),ry=x*Math.sin(view.yaw)+y*Math.cos(view.yaw);
+    const depth=ry*Math.cos(view.pitch)-z*Math.sin(view.pitch);
+    const vertical=z*Math.cos(view.pitch)+ry*Math.sin(view.pitch);
+    const scale=view.focal/(view.distance+depth);
+    return {x:view.w/2+rx*scale,y:view.h*.53-vertical*scale,depth,scale};
+  },
+  // Intersect the exact perspective ray with a fixed horizontal or radial vertical plane.
+  unproject(pixel, view, anchor, plane) {
+    const u=(pixel.x-view.w/2)/view.focal,v=(view.h*.53-pixel.y)/view.focal;
+    const cy=Math.cos(view.yaw),sy=Math.sin(view.yaw),cp=Math.cos(view.pitch),sp=Math.sin(view.pitch);
+    // Eye inverse rotation: (rx=0, ry=-distance*cos(pitch), z=distance*sin(pitch)).
+    const origin=[-view.distance*cp*sy,-view.distance*cp*cy,view.center+view.distance*sp];
+    const rotatedY=cp+v*sp,rotatedZ=-sp+v*cp;
+    const direction=[u*cy+rotatedY*sy,-u*sy+rotatedY*cy,rotatedZ];
+    // Inverse yaw uses x=rx*cos+ry*sin, y=-rx*sin+ry*cos.
+    const radius=Math.hypot(anchor[0],anchor[1]);
+    const normal=plane==='horizontal'?[0,0,1]:radius<.001?[0,1,0]:[-anchor[1]/radius,anchor[0]/radius,0];
+    const dot=(a,b)=>a.reduce((sum,value,index)=>sum+value*b[index],0);
+    const denominator=dot(normal,direction);
+    if(!Number.isFinite(denominator)||Math.abs(denominator)<.035)return null;
+    const distance=dot(normal,anchor.map((value,index)=>value-origin[index]))/denominator;
+    if(distance<=0)return null;
+    return origin.map((value,index)=>value+direction[index]*distance);
+  }
+};
+/* Browser console: commands, panels and canvas interaction. */
 (() => {
   const $ = id => document.getElementById(id);
   const JOINTS = {base:'底座', shoulder:'肩部', elbow:'肘部', gripper:'夹爪'};
+  const LIMITS = {base:[-180,180],shoulder:[-90,90],elbow:[0,180],gripper:[45,180]};
   // Each tab numbers its actions so a delayed earlier request cannot supersede its later stop.
   const UI_CLIENT = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   let uiSequence = 0;
@@ -33,6 +74,19 @@
   let switchingProject = false, requestedProject = null;
   let graspBusy = false;
   let cameraYaw = .75, cameraPitch = .32, modelDrag = null;
+  let modelView=null, modelTip=null, modelTarget=null, cameraModes=[];
+  // One live request at a time, keeping only the latest value of each dragged control.
+  const liveCommands=new Map(); let liveSending=false, liveTimer=null, liveActiveKey=null;
+  async function drainLive() {
+    liveTimer=null;
+    if(liveSending||!liveCommands.size)return;
+    const [key,command]=liveCommands.entries().next().value;liveCommands.delete(key);liveSending=true;liveActiveKey=key;
+    await action(command.name,command.payload,null,true);
+    liveSending=false;liveActiveKey=null;
+    if(liveCommands.size)liveTimer=setTimeout(drainLive,60);
+  }
+  function liveAction(key,name,payload){liveCommands.set(key,{name,payload});if(!liveSending&&!liveTimer)liveTimer=setTimeout(drainLive,35);}
+  function clearLive(){liveCommands.clear();if(liveTimer)clearTimeout(liveTimer);liveTimer=null;modelTarget=null;}
 
   function node(tag, text, className) {
     const item = document.createElement(tag);
@@ -48,15 +102,14 @@
     return {action:actionName,...payload,_ui_client:UI_CLIENT,_ui_sequence:++uiSequence};
   }
   // Keep operations explicit. Stop is independent of busy controls and can interrupt a running program.
-  async function action(actionName, payload = {}, button) {
+  async function action(actionName, payload = {}, button, quiet = false) {
+    if(['stop','home','mode','raw','torque'].includes(actionName))clearLive();
     if (button) button.disabled = true;
     try {
       const response = await fetch('/api/action', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(actionPacket(actionName,payload)),signal:AbortSignal.timeout(actionName==='director'?120000:30000)});
       const data = await response.json();
       if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
-      notify(data.result?.ignored ? '未执行：'+(data.result.reason||'请先启动对应模式') : typeof data.result === 'string' ? data.result : '指令已提交，运行结果见设备事件与真实反馈。',!!data.result?.ignored);
-      showResult(data.result);
-      await pollState();
+      if(!quiet){notify(data.result?.ignored ? '未执行：'+(data.result.reason||'请先启动对应模式') : typeof data.result === 'string' ? data.result : '指令已提交，运行结果见设备事件与真实反馈。',!!data.result?.ignored);showResult(data.result);await pollState();}
       return data.result;
     } catch (error) { notify(`操作未完成：${error.message}`, true); return null; }
     finally { if (button) button.disabled = false; }
@@ -118,12 +171,15 @@
       }
       const next = requestedProject;
       selected = next;
+      selection=null;dragStart=null;
+      if(state.vision)state.vision.detections=[];
       $('experiment-title').textContent = next.title;
       $('experiment-description').textContent = next.description;
       $('results').replaceChildren();
       delete $('results').dataset.image;
       $('video-frame').classList.toggle('selecting',next.id === 'track');
       $('selection-hint').textContent = next.id === 'track' ? '在画面上拖动框选，再启动跟踪' : '识别框来自实际推理';
+      $('model-sync').checked=next.id==='digital';drawOverlay();
       lastProgramNames = '';
       renderPanel(next.id);
       const help = node('a','↗ 查看本项目的操作与验收手册','inline-link');
@@ -140,14 +196,15 @@
   }
   function renderPanel(id) {
     if (id === 'face') {
-      buttons('face','在画面中站定，观察检测框。可选择只识别、水平跟随，或搜索后致意。',`<div class="field-row"><label for="face-behavior">行为</label><select id="face-behavior"><option value="greet">寻找并致意</option><option value="follow">跟随观众</option><option value="detect">只识别</option></select></div>`);
+      buttons('face','在画面中站定，观察检测框。可选择只识别、水平与俯仰跟随，或搜索后致意。',`<div class="field-row"><label for="face-behavior">行为</label><select id="face-behavior"><option value="greet">寻找并致意</option><option value="follow">跟随观众</option><option value="detect">只识别</option></select></div>`);
       bind('start-mode', button => startMode('face',{motion:$('face-behavior').value!=='detect',greet:$('face-behavior').value==='greet'},button));
     } else if (id === 'color') {
       buttons('color','用鲜艳、颜色一致的卡片测试；背景尽量不要出现同色物品。',`<div class="field-row"><label for="target-color">目标颜色</label><select id="target-color"><option value="red">红色</option><option value="green">绿色</option><option value="blue">蓝色</option><option value="yellow">黄色</option></select><select id="color-motion" aria-label="颜色跟随选项"><option value="follow">水平跟随</option><option value="detect">只识别</option></select></div>`);
       bind('start-mode', button => startMode('color',{color:$('target-color').value,motion:$('color-motion').value === 'follow'},button));
     } else if (['gesture','objects','markers','clap'].includes(id)) {
-      const descriptions = {gesture:'先确保手部模型已安装。将完整手掌放在画面中；识别状态由设备返回。',objects:'先确保物品模型已安装，使用模型支持的演示类别；置信度是模型输出。',markers:'使用 ArUco 4×4 / 50 字典打印标记，将其正面朝向摄像头。',clap:'先确保音频设备可用。拍一次手，观察声音事件与动作回应。'};
+      const descriptions = {gesture:'连接上位机并加载手部模型后，将完整手掌放在画面中；识别状态由设备返回。',objects:'先确保物品模型已安装，使用模型支持的演示类别；置信度是模型输出。',markers:'使用 AprilTag tag36h11 标记，将其正面朝向摄像头；识别后显示编号与边框。',clap:'先确保音频设备可用。拍一次手，观察声音事件与动作回应。'};
       buttons(id,descriptions[id]);
+      if(id==='gesture')hostConnectPanel('gestures');
       if (id === 'clap') {
         const row = node('div',undefined,'field-row'); const test = node('button','发送一次明确的拍手测试事件');
         test.onclick = () => action('clap',{},test); row.append(test); $('experiment-panel').append(row);
@@ -157,6 +214,7 @@
       bind('speech-send',button => action('speech',{text:$('speech-text').value},button));
     } else if (id === 'rps') {
       buttons('rps','摄像头猜拳需要手部模型。下面的按钮是手动注入的调试输入，可独立测试胜负规则。',`<div class="field-row"><span class="tag">手动注入 / 调试</span><button id="rps-rock">✊ 石头</button><button id="rps-paper">✋ 布</button><button id="rps-scissors">✌ 剪刀</button></div>`);
+      hostConnectPanel('gestures');
       for (const [name,gesture] of Object.entries({rock:'fist',paper:'open',scissors:'victory'})) bind(`rps-${name}`,button => action('gesture',{gesture},button));
     } else if (id === 'teach') {
       panel('<h3>教它记住动作</h3><p>先用右侧控制调好姿态，再记录当前真实关节角度。同一个名称可以连续追加多个姿态。</p><div class="field-row"><input class="grow" id="record-name" value="我的第一支舞" aria-label="动作名称"><button class="primary" id="record-pose">记录当前姿态</button></div><div class="field-row"><select class="grow" id="saved-programs" aria-label="已保存动作"></select><button id="play-recording">回放</button><button id="load-recording">载入积木编辑</button><button id="delete-recording">删除</button></div><div id="panel-status" class="panel-status"></div>');
@@ -167,7 +225,7 @@
       updatePrograms();
     } else if (id === 'program') renderProgram();
     else if (id === 'track') {
-      panel('<h3>选中你的目标</h3><p>在视频中拖动，画出一个包含目标的矩形。先使用静止背景、短时间跟踪；匹配分数是图像相关度，目标丢失会显示真实状态。</p><div class="field-row"><button class="primary" id="track-start">跟踪选中目标</button><button id="track-stop">停止跟踪</button></div><div id="panel-status" class="panel-status"></div>');
+      panel('<h3>选中你的目标</h3><p>在视频中框出目标，再移动实物测试持续跟踪。匹配分数来自图像跟踪，目标丢失会显示真实状态。</p><div class="field-row"><button class="primary" id="track-start">跟踪选中目标</button><button id="track-stop">停止跟踪</button></div><div id="panel-status" class="panel-status"></div>');
       bind('track-start',button => { if (!selection) return notify('请先在实时画面上框选目标。',true); action('track_target',{box:selection},button); });
       bind('track-stop',button => startMode('manual',{},button));
     } else if (id === 'panorama') {
@@ -178,11 +236,12 @@
       bind('difference-reference',button => action('difference_capture',{},button));
       bind('difference-compare',button => action('difference_compare',{},button));
     } else if (id === 'digital') {
-      panel('<h3>同一台机械臂，两个视角</h3><p>右侧模型通过真实关节反馈计算各连杆的空间坐标，再做三维透视投影。拖动模型改变观察方向，实体机械臂不会因此运动。</p><div class="field-row"><button id="model-reset">重置三维视角</button><button id="raw-toggle">查看原始反馈</button></div><pre id="raw-state" class="code-preview" hidden></pre><div id="panel-status" class="panel-status"></div>');
+      panel('<h3>拖动夹爪，同步实体</h3><p>拖动右侧橙色夹爪，按所选水平 / 垂直平面实时改变末端坐标，使用原厂逆运动学驱动机械臂。实线模型始终来自设备实测角度；圆环标出拖动目标。拖动空白区域旋转观察视角。</p><div class="field-row"><button id="model-reset">重置三维视角</button><button id="raw-toggle">查看原始反馈</button></div><pre id="raw-state" class="code-preview" hidden></pre><div id="panel-status" class="panel-status"></div>');
       bind('model-reset',() => { cameraYaw=.75;cameraPitch=.32;drawRobot(); });
       bind('raw-toggle',() => { $('raw-state').hidden=!$('raw-state').hidden; $('raw-state').textContent=JSON.stringify(state.arm?.raw || {},null,2); });
     } else if (id === 'director') {
       panel('<h3>把一句话编成动作</h3><p>先生成动作预览，再明确执行。模型由上位机或板端本地服务提供；服务不可用时会显示失败原因。</p><textarea id="director-text" aria-label="导演指令">先看看左边，再回到中间，最后亮灯打招呼。</textarea><div class="field-row"><button class="primary" id="director-plan">生成动作预览</button><button id="director-execute" disabled>执行预览动作</button></div><pre id="director-preview" class="code-preview">等待生成…</pre><div id="panel-status" class="panel-status"></div>');
+      hostConnectPanel('director');
       bind('director-plan',async button => { directorSteps=[]; $('director-execute').disabled=true; const result=await action('director',{text:$('director-text').value},button); directorSteps=result?.steps || []; $('director-preview').textContent=result ? JSON.stringify(result,null,2) : '生成失败，请查看运行信息'; $('director-execute').disabled=!directorSteps.length; });
       bind('director-execute',button => action('director_run',{steps:directorSteps},button));
     } else if (id === 'agent') {
@@ -210,6 +269,16 @@
       bind('imu-follow',button=>startMode('imu',{},button));
       bind('imu-stop',button=>startMode('manual',{},button));
     }
+  }
+
+  function hostConnectPanel(worker) {
+    const row=node('div',undefined,'field-row');
+    const input=node('input');input.className='grow';input.id='host-manager-url';input.placeholder='自动寻找本机；或 http://上位机IP:8082';input.setAttribute('aria-label','上位机管理服务地址，可留空');
+    const button=node('button',worker==='gestures'?'连接并加载本机手势模型':'连接并启动本机语言模型');
+    button.id='host-load';
+    const status=node('p',undefined,'panel-status');status.id='host-connect-status';
+    button.onclick=async()=>{const host_url=input.value.trim();status.textContent='正在联系上位机…';const result=await action('host_connect',{worker,...(host_url?{host_url}:{})},button);if(result){const info=result.workers?.[worker]||{};status.textContent=(info.ready?'本机模型已加载，可以启动实验。':info.running?'本机服务已启动，模型正在加载，请稍候再启动实验。':'已连接上位机，模型服务尚未就绪。')+(info.model_exists===false?'\n缺少模型：'+info.model:'')+(info.missing_dependencies?.length?'\n缺少依赖：'+info.missing_dependencies.join('、'):'')+((info.model_exists===false||info.missing_dependencies?.length)?'\n工程目录：'+info.project_dir+'\n安装/下载：'+info.setup:'');}else{status.textContent=$('action-message').textContent+'\n在上位机项目目录运行 .venv/bin/python -m host.manager --host 0.0.0.0 --server http://RK地址:8080，再重试。下载位置和模型路径见此项目手册。';}};
+    row.append(input,button);$('experiment-panel').append(row,status);
   }
 
   function stepLabel(step) {
@@ -261,7 +330,18 @@
     $('demo-state').className='status-pill'+(['foam','imu'].includes(selected.id)?' warning':'');
     if($('panel-status')) {
       const extra=selected.id==='voice'?{worker:state.workers?.speech||{},recognition:state.voice}:selected.id==='clap'?state.workers?.clap:selected.id==='imu'?state.imu:selected.id==='director'?state.director:selected.id==='panorama'?state.panorama:selected.id==='difference'?state.difference:['gesture','rps'].includes(selected.id)?state.host:null;
-      $('panel-status').textContent=message+(extra?'\n'+JSON.stringify(extra):'');
+      let details='';
+      if(selected.id==='voice'){
+        const speech=state.workers?.speech||{}, quality=[];
+        if(speech.text)quality.push(`最近听到“${speech.text}”${speech.accepted===false?'，未采用（低置信度或非口令）':speech.accepted?'，已采用':''}${Number.isFinite(speech.confidence)?' · 置信度 '+Math.round(speech.confidence*100)+'%':''}`);
+        if(Number.isFinite(speech.audio_dbfs))quality.push(`麦克风电平 ${speech.audio_dbfs.toFixed(1)} dBFS${Number.isFinite(speech.clipped_fraction)?' · 削波 '+(speech.clipped_fraction*100).toFixed(1)+'%':''}`);
+        if(speech.error)quality.push(speech.error);if(state.voice?.text)quality.push('已执行口令：'+state.voice.text);
+        details=quality.join('\n');
+      }else if(['gesture','rps'].includes(selected.id)){
+        const host=state.host||{};details=(host.worker_status?'上位机：'+({ready:'模型就绪',running:'正在识别',loading:'模型加载中',failed:'加载失败'}[host.worker_status]||host.worker_status):'')+(host.gesture?' · 手势 '+host.gesture:'')+(host.error?'\n'+host.error:'');
+      }else if(selected.id==='director')details=state.director?.text?'最近规划：'+state.director.text:'';
+      else if(extra)details=JSON.stringify(extra);
+      $('panel-status').textContent=message+(details?'\n'+details:'');
       if (selected.id==='foam' && state.grasp?.message) $('panel-status').textContent=message+'\n'+state.grasp.message;
     }
     if ($('grasp-run')) {
@@ -294,8 +374,12 @@
       $('mode-state').textContent=`模式：${state.mode||'—'}${state.running?' · 执行 '+state.job:''}${state.arm?.transport?' · '+state.arm.transport:''}`;
       for(const joint of Object.keys(JOINTS)){
         const value=state.arm?.joints?.[joint];$(`feedback-${joint}`).textContent=Number.isFinite(value)?value.toFixed(1)+'°':'—';
-        if(document.activeElement!==$(`angle-${joint}`)&&Number.isFinite(value))$(`angle-${joint}`).value=value.toFixed(1);
+        if(document.activeElement!==$(`angle-${joint}`)&&document.activeElement!==$(`range-${joint}`)&&!liveCommands.has(joint)&&liveActiveKey!==joint&&Number.isFinite(value)){$(`angle-${joint}`).value=value.toFixed(1);$(`range-${joint}`).value=value;}
       }
+      const raw=state.arm?.raw||{},goal=state.arm?.cartesian_target;
+      const xyz=value=>['x','y','z'].map(key=>Number.isFinite(value?.[key])?value[key].toFixed(1):'—').join(' / ');
+      $('model-coordinates').textContent=`实测 XYZ ${xyz(raw)} mm${goal?'\n目标 XYZ '+xyz(goal)+' mm':''}`;
+      if(!$('camera-config').dataset.dirty){const config=state.camera?.configuration;const mode=cameraModes.find(item=>config&&['width','height','fps','fourcc'].every(key=>item[key]===config[key]));if(mode)$('camera-config').value=mode.id;}
       const events=(state.events||[]).slice(-6).reverse();$('activity-feed').replaceChildren();
       if(!events.length)$('activity-feed').append(node('p','暂无设备事件。','subtle'));
       for(const event of events){const row=node('p',undefined,event.level==='error'?'event-error':'');row.append(node('time',eventTime(event.time)),node('span',event.message||''));$('activity-feed').append(row);}
@@ -345,15 +429,18 @@
     const hostFresh=Number(state.host?.updated)>Date.now()/1000-3;
     const result=selected?.id==='difference'?state.difference:['gesture','rps'].includes(state.mode)?(hostFresh?state.host:null):state.vision;
     for(const detection of result?.detections||[]){
+      if(detection.label==='tracked_target'&&(selected?.id!=='track'||state.mode!=='track'))continue;
       if(![detection.x,detection.y,detection.w,detection.h].every(Number.isFinite))continue;
       const x=rect.x+detection.x*rect.w,y=rect.y+detection.y*rect.h;
-      const translated={face:'人脸',tracked_target:'跟踪目标',changed:'变化区域',foam:'黑块'};
+      const translated={face:'人脸',tracked_target:'跟踪目标',changed:'变化区域',foam:'黑块',dark_foam_candidate:'黑块候选'};
       const label=translated[detection.label]||detection.label||'目标';
       const showScore=Number.isFinite(detection.confidence)&&!String(result?.confidence_kind||'').includes('presence flag');
       const probability=state.mode==='objects';
       const text=label+(showScore?(probability?' '+Math.round(detection.confidence*100)+'%':' 分数 '+detection.confidence.toFixed(2)):'');
       c.strokeStyle=selected?.id==='difference'?'#ffce87':'#adeca7';
       c.strokeRect(x,y,detection.w*rect.w,detection.h*rect.h);
+      // Decoded AprilTag corners mark its actual quadrilateral, including tilted tags.
+      if(detection.corners?.length===4){c.beginPath();detection.corners.forEach((point,index)=>{const px=rect.x+point[0]*rect.w,py=rect.y+point[1]*rect.h;index?c.lineTo(px,py):c.moveTo(px,py);});c.closePath();c.stroke();}
       const labelWidth=c.measureText(text).width+10;
       c.fillStyle='#173e31';c.fillRect(x,Math.max(0,y-21),labelWidth,21);
       c.fillStyle='#e5fadd';c.fillText(text,x+5,Math.max(15,y-6));
@@ -373,37 +460,144 @@
   // Forward kinematics -> camera rotation -> perspective projection. Unknown feedback draws only the stage.
   function drawRobot(){
     const{context:c,w,h}=canvasSize($('robot-view'));if(!w||!h)return;
-    const project=([x,y,z])=>{const rx=x*Math.cos(cameraYaw)-y*Math.sin(cameraYaw),ry=x*Math.sin(cameraYaw)+y*Math.cos(cameraYaw);const depth=ry*Math.cos(cameraPitch)+z*Math.sin(cameraPitch);const vertical=z*Math.cos(cameraPitch)-ry*Math.sin(cameraPitch);const scale=450/(650+depth);return{x:w/2+rx*scale,y:h*.82-vertical*scale,depth};};
+    modelView={w,h,yaw:cameraYaw,pitch:cameraPitch,center:240,focal:Math.min(w*.9,h*1.2),distance:1200};
+    const project=point=>RoArmModel.project(point,modelView);
     const line=(a,b,color,width=1)=>{const p=project(a),q=project(b);c.strokeStyle=color;c.lineWidth=width;c.lineCap='round';c.beginPath();c.moveTo(p.x,p.y);c.lineTo(q.x,q.y);c.stroke();};
-    for(let i=-3;i<=3;i++){line([i*45,-135,0],[i*45,135,0],'#dce3d7');line([-135,i*45,0],[135,i*45,0],'#dce3d7');}
-    line([0,0,0],[80,0,0],'#cf8370',2);line([0,0,0],[0,80,0],'#89ac76',2);
+    for(let i=-3;i<=3;i++){line([i*70,-210,0],[i*70,210,0],'#dce3d7');line([-210,i*70,0],[210,i*70,0],'#dce3d7');}
+    line([0,0,0],[120,0,0],'#cf8370',2);line([0,0,0],[0,120,0],'#89ac76',2);
     const joints=state.arm?.joints||{};
+    modelTip=null;
     if(!online||!state.arm?.connected||!Object.keys(JOINTS).every(key=>Number.isFinite(joints[key]))){c.fillStyle='#768b7e';c.font='12px system-ui';c.textAlign='center';c.fillText('等待真实关节反馈',w/2,h*.42);return;}
-    // Manufacturer FK: forearm elevation = pi/2 - (elbow + shoulder); e=90° is horizontal.
-    const rad=Math.PI/180,base=joints.base*rad,shoulder=(90-joints.shoulder)*rad;
-    const elbow=(90-joints.shoulder-joints.elbow)*rad;
-    const spatial=(r,z)=>[r*Math.cos(base),r*Math.sin(base),z];
-    const points=[[0,0,0],[0,0,24],spatial(120*Math.cos(shoulder),24+120*Math.sin(shoulder)),spatial(120*Math.cos(shoulder)+110*Math.cos(elbow),24+120*Math.sin(shoulder)+110*Math.sin(elbow))];
-    const foot=project(points[0]);c.fillStyle='#c8d4bf';c.beginPath();c.ellipse(foot.x,foot.y,36,12,0,0,Math.PI*2);c.fill();
-    for(let i=0;i<points.length-1;i++){line(points[i],points[i+1],'#234b43',i===0?22:13);line(points[i],points[i+1],'#759783',i===0?12:5);}
-    for(const point of points.slice(1)){const p=project(point);c.beginPath();c.arc(p.x,p.y,8,0,2*Math.PI);c.fillStyle='#e1e7d8';c.fill();c.strokeStyle='#355b4f';c.lineWidth=3;c.stroke();}
-    const end=points[3],opening=Math.max(3,Math.min(22,(180-joints.gripper)*.16+3));const across=[-Math.sin(base),Math.cos(base),0];
-    for(const direction of [-1,1]){const start=end.map((value,index)=>value+across[index]*direction*7);const tip=start.map((value,index)=>value+across[index]*direction*opening+(index===2?17:0));line(start,tip,'#dc8850',5);}
+    const points=RoArmModel.points(joints),base=joints.base*Math.PI/180;
+    const foot=project(points[0]);c.fillStyle='#c8d4bf';c.beginPath();c.ellipse(foot.x,foot.y,30,10,0,0,Math.PI*2);c.fill();
+    const drawing=[];
+    for(let i=0;i<points.length-1;i++)drawing.push({depth:(project(points[i]).depth+project(points[i+1]).depth)/2,draw:()=>{line(points[i],points[i+1],'#234b43',i===0?22:13);line(points[i],points[i+1],'#759783',i===0?12:5);}});
+    for(const point of points.slice(1))drawing.push({depth:project(point).depth,draw:()=>{const p=project(point);c.beginPath();c.arc(p.x,p.y,7,0,2*Math.PI);c.fillStyle='#e1e7d8';c.fill();c.strokeStyle='#355b4f';c.lineWidth=3;c.stroke();}});
+    const end=points[3],opening=Math.max(3,Math.min(22,(180-joints.gripper)*.16+3)),across=[-Math.sin(base),Math.cos(base),0];
+    drawing.push({depth:project(end).depth-1,draw:()=>{for(const direction of [-1,1]){const start=end.map((value,index)=>value+across[index]*direction*7);const tip=start.map((value,index)=>value+across[index]*direction*opening+(index===2?17:0));line(start,tip,'#dc8850',5);}}});
+    // Painter ordering prevents rear links/joints from being painted on nearer geometry.
+    drawing.sort((a,b)=>b.depth-a.depth).forEach(item=>item.draw());
+    modelTip={...project(end),point:end};
+    if($('model-sync').checked){c.strokeStyle='#dc8850';c.lineWidth=1;c.setLineDash([3,3]);c.beginPath();c.arc(modelTip.x,modelTip.y,17,0,Math.PI*2);c.stroke();c.setLineDash([]);}
+    if(modelTarget){const p=project(modelTarget);c.strokeStyle='#e77846';c.lineWidth=2;c.beginPath();c.arc(p.x,p.y,10,0,Math.PI*2);c.stroke();}
   }
-  $('robot-view').onpointerdown=event=>{modelDrag={x:event.clientX,y:event.clientY};$('robot-view').setPointerCapture(event.pointerId);};
-  $('robot-view').onpointermove=event=>{if(!modelDrag)return;cameraYaw+=(event.clientX-modelDrag.x)*.012;cameraPitch=Math.max(-.2,Math.min(1.1,cameraPitch+(event.clientY-modelDrag.y)*.01));modelDrag={x:event.clientX,y:event.clientY};drawRobot();};
+  function modelPixel(event){const bounds=$('robot-view').getBoundingClientRect();return{x:event.clientX-bounds.left,y:event.clientY-bounds.top};}
+  $('robot-view').onpointerdown=event=>{const pixel=modelPixel(event);if(event.button!==0)return;const moving=$('model-sync').checked&&modelTip&&Math.hypot(pixel.x-modelTip.x,pixel.y-modelTip.y)<28;modelDrag={...pixel,moving,anchor:modelTip?.point?.slice(),view:{...modelView},plane:$('model-plane').value};$('robot-view').setPointerCapture(event.pointerId);};
+  $('robot-view').onpointermove=event=>{
+    if(!modelDrag)return;const pixel=modelPixel(event);
+    if(modelDrag.moving){
+      const target=RoArmModel.unproject(pixel,modelDrag.view,modelDrag.anchor,modelDrag.plane);
+      if(!target){notify('当前视角与拖动平面接近平行，请旋转视角后再拖。',true);return;}
+      const length=Math.hypot(target[0],target[1],target[2]-RoArmModel.pedestal);
+      if(length>=RoArmModel.link2+RoArmModel.link3||length<=Math.abs(RoArmModel.link3-RoArmModel.link2)){notify('拖动目标超出连杆可达范围。',true);return;}
+      modelTarget=target;liveAction('model','cartesian',{x:target[0],y:target[1],z:target[2]-RoArmModel.pedestal,spd:number('coord-speed')});
+    }else{cameraYaw+=(pixel.x-modelDrag.x)*.012;cameraPitch=Math.max(.08,Math.min(1.3,cameraPitch+(pixel.y-modelDrag.y)*.01));modelDrag.x=pixel.x;modelDrag.y=pixel.y;}
+    drawRobot();
+  };
   $('robot-view').onpointerup=$('robot-view').onpointercancel=()=>{modelDrag=null;};
+  $('model-sync').onchange=()=>{if(!$('model-sync').checked){liveCommands.delete('model');modelTarget=null;}drawRobot();};
+
+  function renderCommandHelp() {
+    // Complete command examples copied from the original manufacturer's UI.
+    const commands=[
+      ["WIFI_ON_BOOT",{"T":401,"cmd":3}],
+      ["SET_AP",{"T":402,"ssid":"RoArm-M2","password":"12345678"}],
+      ["SET_STA",{"T":403,"ssid":"yourWifi","password":"yourPassword"}],
+      ["WIFI_APSTA",{"T":404,"ap_ssid":"RoArm-M2","ap_password":"12345678","sta_ssid":"yourWifi","sta_password":"yourPassword"}],
+      ["WIFI_INFO",{"T":405}],
+      ["WIFI_CONFIG_CREATE_BY_STATUS",{"T":406}],
+      ["WIFI_CONFIG_CREATE_BY_INPUT",{"T":407,"mode":3,"ap_ssid":"RoArm-M2","ap_password":"12345678","sta_ssid":"yourWifi","sta_password":"yourPassword"}],
+      ["BROADCAST_FOLLOWER",{"T":300,"mode":0,"mac":"CC:DB:A7:5B:E4:1C"}],
+      ["ESP_NOW_CONFIG",{"T":301,"mode":0,"dev":0,"cmd":0,"megs":0}],
+      ["GET_MAC_ADDRESS",{"T":302}],
+      ["ESP_NOW_ADD_FOLLOWER",{"T":303,"mac":"CC:DB:A7:5B:E4:1C"}],
+      ["ESP_NOW_REMOVE_FOLLOWER",{"T":304,"mac":"CC:DB:A7:5B:E4:1C"}],
+      ["ESP_NOW_MANY_CTRL",{"T":305,"dev":0,"b":0,"s":0,"e":1.57,"h":1.57,"cmd":0,"megs":"hello!"}],
+      ["ESP_NOW_SINGLE",{"T":306,"mac":"FF:FF:FF:FF:FF:FF","dev":0,"b":0,"s":0,"e":1.57,"h":1.57,"cmd":0,"megs":"hello!"}],
+      ["TORQUE_CTRL",{"T":210,"cmd":0}],
+      ["DYNAMIC_ADAPTATION",{"T":112,"mode":1,"b":60,"s":110,"e":50,"h":50}],
+      ["MOVE_INIT",{"T":100}],
+      ["SINGLE_JOINT_CTRL",{"T":101,"joint":1,"rad":0,"spd":0,"acc":10}],
+      ["JOINTS_RAD_CTRL",{"T":102,"base":0,"shoulder":0,"elbow":1.57,"hand":1.57,"spd":0,"acc":10}],
+      ["XYZT_GOAL_CTRL",{"T":104,"x":235,"y":0,"z":234,"t":3.14,"spd":0.25}],
+      ["XYZT_DIRECT_CTRL",{"T":1041,"x":235,"y":0,"z":234,"t":3.14}],
+      ["SERVO_RAD_FEEDBACK",{"T":105}],
+      ["EOAT_HAND_CTRL",{"T":106,"cmd":3.14,"spd":0,"acc":0}],
+      ["SINGLE_JOINT_ANGLE",{"T":121,"joint":1,"angle":0,"spd":10,"acc":10}],
+      ["JOINTS_ANGLE_CTRL",{"T":122,"b":0,"s":0,"e":90,"h":180,"spd":10,"acc":10}],
+      ["CONSTANT_CTRL",{"T":123,"m":0,"axis":0,"cmd":0,"spd":0}],
+      ["DELAY_MILLIS",{"T":111,"cmd":3000}],
+      ["EOAT_TYPE",{"T":1,"mode":0}],
+      ["CONFIG_EOAT",{"T":2,"pos":3,"ea":0,"eb":20}],
+      ["EOAT_GRAB_TORQUE",{"T":107,"tor":200}],
+      ["SET_JOINT_PID",{"T":108,"joint":3,"p":16,"i":0}],
+      ["RESET_PID",{"T":109}],
+      ["SET_NEW_X",{"T":110,"xAxisAngle":0}],
+      ["CREATE_MISSION",{"T":220,"name":"mission_a","intro":"test mission created in flash."}],
+      ["MISSION_CONTENT",{"T":221,"name":"mission_a"}],
+      ["APPEND_STEP_JSON",{"T":222,"name":"mission_a","step":"{\"T\":104,\"x\":235,\"y\":0,\"z\":234,\"t\":3.14,\"spd\":0.25}"}],
+      ["APPEND_STEP_FB",{"T":223,"name":"mission_a","spd":0.25}],
+      ["APPEND_DELAY",{"T":224,"name":"mission_a","delay":3000}],
+      ["INSERT_STEP_JSON",{"T":225,"name":"mission_a","stepNum":3,"step":"{\"T\":114,\"led\":255}"}],
+      ["INSERT_STEP_FB",{"T":226,"name":"mission_a","stepNum":3,"spd":0.25}],
+      ["INSERT_DELAY",{"T":227,"stepNum":3,"delay":3000}],
+      ["REPLACE_STEP_JSON",{"T":228,"name":"mission_a","stepNum":3,"step":"{\"T\":114,\"led\":255}"}],
+      ["REPLACE_STEP_FB",{"T":229,"name":"mission_a","stepNum":3}],
+      ["REPLACE_DELAY",{"T":230,"name":"mission_a","stepNum":3,"delay":3000}],
+      ["DELETE_STEP",{"T":231,"name":"mission_a","stepNum":3}],
+      ["MOVE_TO_STEP",{"T":241,"name":"mission_a","stepNum":3}],
+      ["MISSION_PLAY",{"T":242,"name":"mission_a","times":3}],
+      ["SCAN_FILES",{"T":200}],
+      ["CREATE_FILE",{"T":201,"name":"file.txt","content":"inputContentHere."}],
+      ["READ_FILE",{"T":202,"name":"file.txt"}],
+      ["DELETE_FILE",{"T":203,"name":"file.txt"}],
+      ["APPEND_LINE",{"T":204,"name":"file.txt","content":"inputContentHere."}],
+      ["INSERT_LINE",{"T":205,"name":"file.txt","lineNum":3,"content":"content"}],
+      ["REPLACE_LINE",{"T":206,"name":"file.txt","lineNum":3,"content":"Content"}],
+      ["READ_LINE",{"T":207,"name":"file.txt","lineNum":3}],
+      ["DELETE_LINE",{"T":208,"name":"file.txt","lineNum":3}],
+      ["SWITCH_CTRL",{"T":113,"pwm_a":-255,"pwm_b":-255}],
+      ["LIGHT_CTRL",{"T":114,"led":255}],
+      ["SWITCH_OFF",{"T":115}],
+      ["SET_SERVO_ID",{"T":501,"raw":1,"new":11}],
+      ["SET_MIDDLE",{"T":502,"id":11}],
+      ["SET_SERVO_PID",{"T":503,"id":14,"p":16}],
+      ["REBOOT",{"T":600}],
+      ["FREE_FLASH_SPACE",{"T":601}],
+      ["BOOT_MISSION_INFO",{"T":602}],
+      ["RESET_BOOT_MISSION",{"T":603}],
+      ["NVS_CLEAR",{"T":604}],
+      ["INFO_PRINT",{"T":605,"cmd":1}],
+      ["SINGLE_AXIS_CTRL",{"T":103,"axis":1,"pos":310,"spd":0.25}],
+      ["WIFI_STOP",{"T":408}],
+    ];
+    for(const [name,command] of commands){const row=node('div',undefined,'command-example');const button=node('button',`T${command.T} ${name}`);button.onclick=()=>{$('raw-command').value=JSON.stringify(command);};const code=node('code',JSON.stringify(command));row.append(button,code);if([600,601,603,604].includes(command.T)){button.disabled=true;row.append(node('span','此入口禁用','subtle'));}$('command-help').append(row);}
+  }
 
   for(const [joint,label] of Object.entries(JOINTS)){
     const summary=node('div');const value=node('strong','—');value.id=`feedback-${joint}`;summary.append(node('span',label),value);$('joint-summary').append(summary);
-    const row=node('div',undefined,'joint-control');const title=node('label',label);title.htmlFor=`angle-${joint}`;const input=node('input');input.id=`angle-${joint}`;input.type='number';input.step='1';input.setAttribute('aria-label',`${label}目标角度`);const minus=node('button','−');const plus=node('button','＋');minus.setAttribute('aria-label',`${label}减小5度`);plus.setAttribute('aria-label',`${label}增大5度`);const go=node('button','到位');minus.onclick=()=>action('joint',{joint,delta:-5},minus);plus.onclick=()=>action('joint',{joint,delta:5},plus);go.onclick=()=>action('joint',{joint,angle:number(input.id)},go);row.append(title,minus,input,node('span','°','unit'),plus,go);$('joint-controls').append(row);
+    const row=node('div',undefined,'joint-control');const title=node('label',label);title.htmlFor=`angle-${joint}`;const input=node('input');input.id=`angle-${joint}`;input.type='number';input.step='1';input.min=LIMITS[joint][0];input.max=LIMITS[joint][1];input.setAttribute('aria-label',`${label}目标角度`);const minus=node('button','−');const plus=node('button','＋');minus.setAttribute('aria-label',`${label}减小5度`);plus.setAttribute('aria-label',`${label}增大5度`);const go=node('button','到位');minus.onclick=()=>{liveCommands.delete(joint);action('joint',{joint,delta:-5},minus);};plus.onclick=()=>{liveCommands.delete(joint);action('joint',{joint,delta:5},plus);};go.onclick=()=>{liveCommands.delete(joint);action('joint',{joint,angle:number(input.id)},go);};row.append(title,minus,input,node('span','°','unit'),plus,go);$('joint-controls').append(row);
+    const slider=node('input',undefined,'joint-slider');slider.id=`range-${joint}`;slider.type='range';slider.min=LIMITS[joint][0];slider.max=LIMITS[joint][1];slider.step='.5';slider.value=joint==='elbow'?90:joint==='gripper'?180:0;slider.setAttribute('aria-label',`${label}实时目标角度`);slider.oninput=()=>{input.value=slider.value;liveAction(joint,'joint',{joint,angle:Number(slider.value)});};$('joint-controls').append(slider);
   }
   bind('stop',button=>action('stop',{},button));bind('home',button=>action('home',{},button));bind('led-send',button=>action('led',{value:number('led')},button));bind('reconnect',()=>{resetVideo();pollCamera();});
+  $('led').oninput=()=>{$('led-value').value=$('led').value;liveAction('led','led',{value:number('led')});};
+  for(const [id,value] of [['led-on',255],['led-off',0]])bind(id,button=>{liveCommands.delete('led');$('led').value=value;$('led-value').value=value;action('led',{value},button);});
+  for(const name of ['torque','adaptive'])for(const enabled of [true,false])bind(`${name}-${enabled?'on':'off'}`,button=>action(name,{enabled},button));
+  function coordinateFeedback(){const raw=state.arm?.raw||{};for(const key of ['x','y','z','t'])if(Number.isFinite(raw[key]))$(`coord-${key}`).value=(key==='t'?raw[key]*180/Math.PI:raw[key]).toFixed(1);}
+  bind('coord-read',coordinateFeedback);
+  bind('coord-send',button=>action('cartesian',{x:number('coord-x'),y:number('coord-y'),z:number('coord-z'),t:number('coord-t')*Math.PI/180,spd:number('coord-speed')},button));
+  for(const [label,axis,sign] of [['前 X+', 'x',1],['后 X−','x',-1],['左 Y+','y',1],['右 Y−','y',-1],['上 Z+','z',1],['下 Z−','z',-1],['夹爪 t+','t',1],['夹爪 t−','t',-1]]){const button=node('button',label);button.onclick=()=>action('cartesian_delta',{axis,delta:sign*(axis==='t'?5*Math.PI/180:number('coord-step')),spd:number('coord-speed')},button);$('coordinate-jog').append(button);}
+  for(const plane of ['horizontal','vertical'])bind(`${plane}-drag`,()=>{$('model-sync').checked=true;$('model-plane').value=plane;notify('拖动橙色夹爪实时控制实体；拖动空白旋转视角。');drawRobot();});
+  bind('raw-send',async button=>{const result=await action('raw',{command:$('raw-command').value},button);$('raw-result').hidden=false;$('raw-result').textContent=result?JSON.stringify(result,null,2):$('action-message').textContent;});
+  $('camera-config').onchange=()=>{$('camera-config').dataset.dirty='true';};
+  bind('camera-config-send',async button=>{const mode=cameraModes.find(item=>item.id===$('camera-config').value);if(!mode)return;const result=await action('camera_config',{width:mode.width,height:mode.height,fps:mode.fps,fourcc:mode.fourcc},button);if(result!==null){delete $('camera-config').dataset.dirty;resetVideo();await pollCamera();$('camera-config-status').textContent=result.message||`已请求 ${mode.width}×${mode.height} · ${mode.fps} FPS · ${mode.fourcc}，实际采集结果见视频状态。`;}});
+  async function cameraOptions(){try{const response=await fetch('/api/camera/options',{signal:AbortSignal.timeout(5000)});if(!response.ok)throw new Error(`HTTP ${response.status}`);const data=await response.json();cameraModes=data.modes||[];$('camera-config').replaceChildren();for(const mode of cameraModes){const option=node('option',`${mode.width}×${mode.height} · ${mode.fps} FPS · ${mode.fourcc}`);option.value=mode.id;$('camera-config').append(option);}const config=data.configuration||state.camera?.configuration;const current=cameraModes.find(item=>config&&['width','height','fps','fourcc'].every(key=>item[key]===config[key]));if(current)$('camera-config').value=current.id;$('camera-config-status').textContent=cameraModes.length?'选项由设备支持能力筛选；应用后查看实际采集反馈。':'设备未提供可配置模式';}catch(error){$('camera-config-status').textContent='读取摄像头模式失败：'+error.message;}}
+  renderCommandHelp();cameraOptions();
   $('camera').onerror=()=>{resetVideo();$('camera').hidden=true;$('camera-empty').hidden=false;};
   for(const button of document.querySelectorAll('[data-filter]'))button.onclick=()=>{filter=button.dataset.filter;for(const item of document.querySelectorAll('[data-filter]'))item.classList.toggle('active',item===button);renderCards();};
   $('search').oninput=renderCards;
   // Best-effort stop for leaving the console, using keepalive because pagehide may end ordinary requests.
-  function leaveStop(){if(!online)return;fetch('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(actionPacket('stop')),keepalive:true}).catch(()=>{});}
+  function leaveStop(){clearLive();modelDrag=null;if(!online)return;fetch('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(actionPacket('stop')),keepalive:true}).catch(()=>{});}
   window.addEventListener('pagehide',leaveStop);document.addEventListener('visibilitychange',()=>{if(document.hidden)leaveStop();});
   window.addEventListener('resize',()=>{drawOverlay();drawRobot();});
   window.addEventListener('beforeunload',event=>{if(programDirty){event.preventDefault();event.returnValue='';}});

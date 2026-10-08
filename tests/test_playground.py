@@ -1,5 +1,6 @@
 """Protocol/program tests use a pseudo-terminal and fake arm, never the real robot."""
 import json
+import io
 import math
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ import threading
 import time
 import unittest
 from unittest.mock import Mock, patch
+from urllib.error import HTTPError
 
 import cv2
 import numpy as np
@@ -109,6 +111,61 @@ class ProgramTests(unittest.TestCase):
         self.app.stop(hold=False)
         self.temporary.cleanup()
 
+    def test_visual_follow_updates_base_and_pitch_without_arrival_wait(self):
+        """Both camera axes use measured angles and faster continuous goal refresh."""
+        self.app.mode = 'face'
+        with patch.object(self.arm, 'move', wraps=self.arm.move) as move:
+            self.app._follow('face', {'greet': False},
+                             [dict(cx=.8, cy=.75, w=.2, h=.2)], self.app.cancel, 10)
+        self.assertEqual([call.args[0] for call in move.call_args_list], ['base', 'elbow'])
+        self.assertLess(move.call_args_list[0].kwargs['angle'], 0)
+        self.assertGreater(move.call_args_list[1].kwargs['angle'], 90)
+        self.assertTrue(all(call.kwargs['speed'] == 500 for call in move.call_args_list))
+
+    def test_face_greeting_retains_detection_and_rearms_after_loss(self):
+        self.app.mode = 'face'
+        target = [dict(cx=.5, cy=.5, w=.2, h=.2)]
+        with patch.object(self.app, '_greet') as greet:
+            self.app._follow('face', {}, target, self.app.cancel, 20)
+            self.app.job.join(1)
+        greet.assert_called_once()
+        self.assertEqual(self.app.mode, 'face')
+        self.assertTrue(self.app.face_greeted)
+        self.app.last_seen = 20
+        self.app._follow('face', {}, [], self.app.cancel, 23)
+        self.assertFalse(self.app.face_greeted)
+
+    def test_visual_tracking_does_not_compete_with_active_greeting(self):
+        self.app.mode = 'face'
+        self.app.job = Mock()
+        self.app.job.is_alive.return_value = True
+        with patch.object(self.arm, 'move') as move:
+            self.app._follow('face', {}, [dict(cx=.9, cy=.9, w=.2, h=.2)], self.app.cancel, 20)
+        move.assert_not_called()
+        self.app.job = None
+
+    def test_follow_waiting_for_manual_joint_lock_cannot_reclaim_motion(self):
+        """Manual motion disables follow without changing the perception mode/token."""
+        self.app.mode = 'face'
+        self.app.options = {'motion': True, 'greet': False}
+        attempted = threading.Event()
+        def late_follow():
+            attempted.set()
+            self.app._follow('face', {'motion': True, 'greet': False},
+                             [dict(cx=.9, cy=.8, w=.2, h=.2)], self.app.cancel, 20)
+        with self.app.action_lock:
+            worker = threading.Thread(target=late_follow)
+            worker.start()
+            self.assertTrue(attempted.wait(1))
+            self.app.action(dict(action='joint', joint='base', angle=5))
+        worker.join(1)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(self.app.mode, 'face')
+        self.assertFalse(self.app.options['motion'])
+        commands = [command for command in self.transport.calls if command['T'] == 101]
+        self.assertEqual(len(commands), 1, commands)
+        self.assertAlmostEqual(commands[0]['rad'], math.radians(5))
+
     def test_managed_audio_home_and_failed_worker_are_reported(self):
         """DynamicUser has no passwd entry; Vosk must receive a writable HOME."""
         self.app.local_server = 'http://unused-test-server'
@@ -133,6 +190,40 @@ class ProgramTests(unittest.TestCase):
         close_audio.assert_called_once()
         self.assertEqual(self.app.mode, 'manual')
         self.assertTrue(self.app.cancel.is_set())
+
+    def test_manual_controls_preserve_visual_inference_and_override_following(self):
+        """Image modes keep their token and results; competing automatic motion yields."""
+        for mode in ('objects', 'foam', 'face', 'color', 'markers', 'track'):
+            self.app.mode, self.app.options = mode, dict(motion=True)
+            self.app.cancel = threading.Event()
+            token = self.app.cancel
+            self.app.handle_action(dict(action='joint', joint='base', delta=5))
+            self.assertEqual(self.app.mode, mode)
+            self.assertIs(self.app.cancel, token)
+            self.assertFalse(token.is_set())
+            if mode not in ('objects', 'foam'):
+                self.assertFalse(self.app.options['motion'])
+
+    def test_stop_clears_obsolete_detection_boxes(self):
+        self.app.vision = dict(detections=[dict(label='old')], width=320, height=240)
+        self.app.stop(hold=False)
+        self.assertEqual(self.app.vision, dict(detections=[], width=320, height=240))
+
+    def test_missing_host_model_keeps_download_instructions(self):
+        """A reachable manager's 503 is a model setup failure, not a connection failure."""
+        expected = dict(error='模型未安装', workers=dict(gestures=dict(model_exists=False,
+                        model='/project/models/gesture_recognizer.task',
+                        setup='bash scripts/fetch_interaction_models.sh gestures')))
+        error = HTTPError('http://laptop:8082/api/start', 503, 'unavailable', {},
+                          io.BytesIO(json.dumps(expected).encode()))
+        opener = Mock()
+        opener.open.side_effect = error
+        with patch('playground.build_opener', return_value=opener):
+            result = self.app.action(dict(action='host_connect', worker='gestures', host_url='http://laptop:8082',
+                                         _rk_origin='http://rk:8080'))
+        self.assertEqual(result, expected)
+        body = json.loads(opener.open.call_args.args[0].data)
+        self.assertEqual(body['server'], 'http://rk:8080')
 
     def test_record_measured_pose_and_persistent_program(self):
         self.app.action(dict(action='record', name='我的动作'))

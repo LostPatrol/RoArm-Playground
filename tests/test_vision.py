@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -78,7 +79,7 @@ class VisionTests(unittest.TestCase):
         if not hasattr(cv2, "aruco"):
             self.skipTest("OpenCV build lacks ArUco")
         aruco = cv2.aruco
-        dictionary = aruco.getPredefinedDictionary(aruco.DICT_4X4_50)
+        dictionary = aruco.getPredefinedDictionary(aruco.DICT_APRILTAG_36h11)
         if hasattr(aruco, "generateImageMarker"):
             marker = aruco.generateImageMarker(dictionary, 17, 100)
         else:
@@ -87,6 +88,8 @@ class VisionTests(unittest.TestCase):
         result = self.engine.process(self.frame, "markers")
         self.assertNotIn("error", result)
         self.assertEqual(result["detections"][0]["id"], 17)
+        self.assertEqual(result["detections"][0]["family"], "tag36h11")
+        self.assertEqual(len(result["detections"][0]["corners"]), 4)
         self.assertAlmostEqual(result["detections"][0]["cx"], 150 / 320, delta=0.005)
 
     def test_missing_objects_model_explicit_error(self):
@@ -137,6 +140,69 @@ class VisionTests(unittest.TestCase):
         self.assertIn("error", self.engine.process(self.frame, "track"))
         with self.assertRaises(ValueError):
             self.engine.set_target(self.frame, (-0.1, 0.1, 0.2, 0.2))
+
+    def test_track_handheld_scale_change_and_reacquisition(self):
+        """Moving toward the camera must not require the original pixel dimensions."""
+        texture = np.random.RandomState(32).randint(0, 255, (40, 48, 3), dtype=np.uint8)
+        self.frame[60:100, 80:128] = texture
+        self.engine.set_target(self.frame, (80 / 320, 60 / 240, 48 / 320, 40 / 240))
+        empty = np.full_like(self.frame, 240)
+        self.assertTrue(self.engine.process(empty, "track")["lost"])
+        moved = empty.copy()
+        moved[100:150, 190:250] = cv2.resize(texture, (60, 50))
+        result = self.engine.process(moved, "track")
+        self.assertFalse(result["lost"], result)
+        box = result["detections"][0]
+        self.assertAlmostEqual(box["cx"], 220 / 320, delta=.01)
+        self.assertAlmostEqual(box["w"], 60 / 320, delta=.01)
+
+    def test_board_base_opencv_multiframe_translation_scale_rotation(self):
+        """RK OpenCV lacks CSRT; actual pixel sequences must exercise the board's optical flow."""
+        texture = np.random.RandomState(77).randint(0, 255, (60, 80, 3), dtype=np.uint8)
+        texture = cv2.GaussianBlur(texture, (3, 3), 0)
+        self.frame[70:130, 70:150] = texture
+        with patch.object(cv2, 'TrackerCSRT_create', None, create=True):
+            self.engine.set_target(self.frame, (70 / 320, 70 / 240, 80 / 320, 60 / 240))
+            used_flow = False
+            for index in range(1, 7):
+                scale = 1 + index * .025
+                matrix = cv2.getRotationMatrix2D((40, 30), index * 2, scale)
+                changed = cv2.warpAffine(texture, matrix, (80, 60), borderValue=(240, 240, 240))
+                image = np.full_like(self.frame, 240)
+                x, y = 70 + index * 8, 70 + index * 4
+                image[y:y + 60, x:x + 80] = changed
+                result = self.engine.process(image, 'track')
+                self.assertFalse(result['lost'], result)
+                used_flow |= result['backend'] == 'Lucas-Kanade optical flow'
+                box = result['detections'][0]
+                self.assertAlmostEqual(box['cx'], (x + 40) / 320, delta=.04)
+                self.assertAlmostEqual(box['cy'], (y + 30) / 240, delta=.04)
+            self.assertTrue(used_flow, 'Test must exercise optical flow, not just template matching')
+            self.assertFalse(np.array_equal(self.engine.template, self.engine.anchor_template))
+            lost = self.engine.process(np.full_like(self.frame, 240), 'track')
+            self.assertTrue(lost['lost'], lost)
+            self.assertEqual(lost['track_confidence'], 0)
+
+    def test_foam_rejects_bright_low_saturation_blank_table(self):
+        """The old V220/S100 rule falsely labeled pale blank mat as the black block."""
+        hsv = np.full((240, 320, 3), (90, 120, 205), np.uint8)
+        hsv[70:220, 5:100] = (88, 80, 215)
+        hsv[100:170, 160:230] = (70, 30, 70)
+        result = self.engine.process(cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR), "foam")
+        self.assertEqual(len(result["detections"]), 1, result)
+        self.assertAlmostEqual(result["detections"][0]["x"], 160 / 320)
+        self.assertLess(result["parameters"]["effective_dark_threshold"], 200)
+
+    @unittest.skipUnless(os.environ.get("ROARM_FOAM_TASK3_IMAGE"), "Set task3 supplied screenshot path")
+    def test_foam_task3_screenshot_regression(self):
+        """Replay the user's actual bad frame, excluding the UI and drawn box borders."""
+        screenshot = cv2.imread(os.environ["ROARM_FOAM_TASK3_IMAGE"])
+        image = cv2.resize(screenshot[226:1066, 128:1247], (640, 480))
+        result = self.engine.process(image, "foam", {"roi": [0, .35, 1, .65]})
+        blocks = [box for box in result["detections"] if .45 < box["cx"] < .65 and .45 < box["cy"] < .8]
+        self.assertTrue(blocks, result)
+        self.assertGreater(max(box["confidence"] for box in blocks), .8)
+        self.assertFalse(any(box["cx"] < .3 and box["w"] > .15 for box in result["detections"]), result)
 
     def test_difference_and_unchanged_image(self):
         after = self.frame.copy()

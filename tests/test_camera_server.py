@@ -57,6 +57,33 @@ class CameraStub:
 
 
 class IntegrationTests(unittest.TestCase):
+    def test_camera_modes_use_uvc_formats_and_configure_persists(self):
+        """Configuration cannot invent modes, and survives a service restart."""
+        output = """[0]: 'MJPG'
+        Size: Discrete 640x480
+        Interval: Discrete 0.004s (227.004 fps)
+        Size: Discrete 1280x720
+        Interval: Discrete 0.006s (156.000 fps)
+        [1]: 'YUYV'
+        Size: Discrete 1280x720
+        Interval: Discrete 0.200s (5.000 fps)
+        """
+        modes = module.Camera.parse_modes(output)
+        self.assertEqual(len(modes), 5)
+        self.assertFalse(any(m['fourcc'] == 'YUYV' and m['fps'] == 30 for m in modes))
+        with TemporaryDirectory() as directory:
+            camera = module.Camera.__new__(module.Camera)
+            camera.condition = threading.Condition()
+            camera.config_file = Path(directory) / 'camera.json'
+            camera.modes, camera.revision, camera.frame = modes, 0, b'old frame'
+            goal = dict(width=1280, height=720, fps=30, fourcc='MJPG')
+            camera.configure(goal)
+            self.assertIsNone(camera.frame)
+            self.assertEqual(camera.revision, 1)
+            self.assertEqual(json.loads(camera.config_file.read_text()), goal)
+            with self.assertRaises(ValueError):
+                camera.configure(dict(goal, fourcc='YUYV'))
+
     def test_usb_discovery_after_hub_port_and_node_change(self):
         # Different USB path and video index must not pin capture to video40.
         with TemporaryDirectory() as temporary:

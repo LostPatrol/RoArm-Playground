@@ -15,4 +15,4 @@ gpu_layers=0
 [[ "$backend" == cuda ]] && gpu_layers=99
 exec "$server_bin" -m "$model_file" --alias roarm-director \
     --host "${DIRECTOR_HOST:-127.0.0.1}" --port "${DIRECTOR_PORT:-8081}" \
-    -c 2048 -t "${DIRECTOR_THREADS:-6}" -ngl "$gpu_layers"
+    -c "${DIRECTOR_CONTEXT:-4096}" -t "${DIRECTOR_THREADS:-6}" -ngl "$gpu_layers"

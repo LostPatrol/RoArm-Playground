@@ -7,6 +7,7 @@ import math
 from pathlib import Path
 import sys
 import threading
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -14,7 +15,8 @@ from unittest.mock import Mock, patch
 # Support both `python -m unittest ...` and `python tests/test_host_worker.py`.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from host.director import compile_model_plan, plan, validate_plan
-from host.worker import ClapDetector, Client, GestureLatch, audio_chunks, mono_pcm, run_audio
+from host.worker import ClapDetector, Client, GestureLatch, audio_chunks, mono_pcm, pcm_levels, run_audio, speech_result
+from host.manager import Manager
 
 
 class InteractionsTest(unittest.TestCase):
@@ -112,6 +114,73 @@ class InteractionsTest(unittest.TestCase):
         self.assertEqual([path for path, _ in self.posts], ["/api/perception"])
         self.assertEqual(self.posts[0][1]["kind"], "clap")
         self.assertEqual(self.posts[0][1]["worker_status"], "running")
+        self.assertEqual(self.posts[0][1]["clipped_fraction"], 0)
+
+    def test_command_grammar_rejects_unknown_and_uncertain_decoder_results(self):
+        self.mode = "voice"
+        client = Client(self.url)
+        for text, confidence in (("向 左", .5), ("[unk]向 左", .9), ("爪", .99)):
+            speech_result({"text": text, "result": [{"conf": confidence}]}, client, True)
+        self.assertTrue(all(path == "/api/perception" for path, _ in self.posts))
+        self.assertTrue(all(not body["accepted"] for _, body in self.posts))
+        speech_result({"text": "向 左", "result": [{"conf": .9}]}, client, True)
+        self.assertEqual(self.posts[-1], ("/api/action", {"action": "speech", "text": "向左"}))
+
+    def test_pcm_level_diagnostic_exposes_clipping(self):
+        levels = pcm_levels(array.array("h", [32767, -32768, 0, 0]).tobytes())
+        self.assertEqual(levels["clipped_fraction"], .5)
+        self.assertAlmostEqual(levels["audio_rms"], 2**-.5, places=4)
+
+    def test_manager_does_not_fake_missing_model_or_spawn_unknown_worker(self):
+        root = Path(__file__).resolve().parent.parent
+        with tempfile.TemporaryDirectory(dir=str(root / "agent/codex")) as directory:
+            manager = Manager(self.url, directory)
+            with patch("host.manager.ROOT", Path(directory)), patch("host.manager.subprocess.Popen") as launch:
+                with self.assertRaises(ValueError):
+                    manager.start("unknown")
+                with self.assertRaises(RuntimeError):
+                    manager.start("gestures")
+                launch.assert_not_called()
+
+    def test_manager_tracks_actual_model_readiness_and_keeps_one_process(self):
+        root = Path(__file__).resolve().parent.parent
+        with tempfile.TemporaryDirectory(dir=str(root / "agent/codex")) as directory:
+            manager = Manager(self.url, directory)
+            process = Mock(pid=123)
+            process.poll.return_value = None
+            with patch.object(manager, "requirements", return_value={"model_exists": True, "missing_dependencies": []}), \
+                 patch.object(manager, "director_ready", return_value=False), \
+                 patch("host.manager.subprocess.Popen", return_value=process) as launch:
+                result = manager.start("gestures", self.url)
+                self.assertEqual(result["workers"]["gestures"]["status"], "loading")
+                manager.logs["gestures"].write_text('{"worker_status": "ready"}\n')
+                result = manager.start("gestures", self.url)
+                self.assertTrue(result["workers"]["gestures"]["ready"])
+                launch.assert_called_once()
+                manager.close()
+                process.terminate.assert_called_once()
+
+    def test_manager_restarts_failed_worker_with_the_same_rk_endpoint(self):
+        root = Path(__file__).resolve().parent.parent
+        with tempfile.TemporaryDirectory(dir=str(root / "agent/codex")) as directory:
+            manager = Manager(self.url, directory)
+            old, new = Mock(pid=1), Mock(pid=2)
+            old.poll.return_value = 1
+            new.poll.return_value = None
+            manager.processes["gestures"] = old
+            manager.desired.add("gestures")
+            manager.last_launch["gestures"] = 0
+            stop = Mock()
+            stop.wait.side_effect = [False, True]
+            with patch.object(manager, "requirements", return_value={"model_exists": True, "missing_dependencies": []}), \
+                 patch.object(manager, "director_ready", return_value=False), \
+                 patch("host.manager.time.monotonic", return_value=10), \
+                 patch("host.manager.subprocess.Popen", return_value=new) as launch:
+                manager.supervise(stop)
+                self.assertIs(manager.processes["gestures"], new)
+                self.assertIn(self.url, launch.call_args.args[0])
+                self.assertFalse(manager.status()["workers"]["gestures"]["ready"])
+                manager.close()
 
     def test_real_api_path_schema_and_preview_only(self):
         output = plan("灯亮", self.url, "model-test")

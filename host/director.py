@@ -2,6 +2,7 @@
 import argparse
 import json
 import math
+from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
 
@@ -56,6 +57,10 @@ SYSTEM_PROMPT = """你是机械臂表演导演，只生成JSON计划，绝不直
 不要计算正负号，degrees只能填写正数，实际机械方向由控制器绑定。
 格式是{"steps":[...],"explanation":"简短中文说明"}。
 只使用已列出的动作。如果要求识别人、抓取未知物品或超出能力，用空steps并说明。
+只生成用户要求的动作，不要额外张开夹爪、抬头、等待或重复动作。
+打招呼对应单独的greet一步，不需要自行分解。亮灯对应led=255一步。
+在同一句指令里先看左/右边再回到中间，是撤销刚才的水平转动，使用相反方向和相同角度。
+独立要求回到某个未知绝对角度无法推断，用空steps说明，不能假定当前角度。
 不把未知相机、关节位置或抓取状态当成事实。
 例子：向左十度={"type":"joint","direction":"left","degrees":10}；
 向右十度={"type":"joint","direction":"right","degrees":10}。
@@ -144,6 +149,19 @@ def plan(text, url="http://127.0.0.1:8081/v1", model="roarm-director"):
                          {"role": "assistant", "content": json.dumps({
                              "steps": [{"type": "joint", "direction": direction, "degrees": 10}],
                              "explanation": instruction}, ensure_ascii=False)}])
+    # Multi-action examples keep this small model from expanding greet into invented joints.
+    for instruction, steps in [
+        ("先看看左边，再回到中间，最后亮灯打招呼。", [
+            {"type": "joint", "direction": "left", "degrees": 10},
+            {"type": "joint", "direction": "right", "degrees": 10},
+            {"type": "led", "value": 255}, {"type": "greet"}]),
+        ("先关灯，向右看八度，回到原来的朝向，打招呼", [
+            {"type": "led", "value": 0},
+            {"type": "joint", "direction": "right", "degrees": 8},
+            {"type": "joint", "direction": "left", "degrees": 8}, {"type": "greet"}])]:
+        messages.extend([{"role": "user", "content": instruction},
+                         {"role": "assistant", "content": json.dumps({
+                             "steps": steps, "explanation": instruction}, ensure_ascii=False)}])
     messages.append({"role": "user", "content": (
         "把以下表演指令转换成计划：" + text + "\n"
         "用方向枚举left/right/up/down/open/close表达原指令，不要计算机械坐标的正负号。只输出JSON。")})
@@ -153,8 +171,16 @@ def plan(text, url="http://127.0.0.1:8081/v1", model="roarm-director"):
     request = Request(endpoint, json.dumps(payload).encode(),
                       {"Content-Type": "application/json"}, method="POST")
     # Local/LAN service requests must not be captured by a desktop HTTP proxy.
-    with build_opener(ProxyHandler({})).open(request, timeout=90) as response:
-        result = json.load(response)
+    try:
+        with build_opener(ProxyHandler({})).open(request, timeout=90) as response:
+            result = json.load(response)
+    except HTTPError as error:
+        raise RuntimeError("导演模型服务返回HTTP %s：%s" %
+                           (error.code, error.read(1000).decode(errors="replace"))) from error
+    except URLError as error:
+        raise RuntimeError("导演模型服务不可达（%s）：%s；请尝试连接/加载本机模型，"
+                           "或在上位机工程运行 bash host/install_host_service.sh" %
+                           (url, error.reason)) from error
     content = result["choices"][0]["message"]["content"]
     if not isinstance(content, str):
         raise ValueError("LLM response contains no text")

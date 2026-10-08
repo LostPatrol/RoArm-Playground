@@ -21,7 +21,7 @@
 开发机用项目 `.venv/bin/python`，设备用 `/opt/roarm-camera/.venv/bin/python`。首次设备创建：
 
 ```sh
-apt-get install python3-venv python3-opencv python3-numpy alsa-utils
+apt-get install python3-venv python3-opencv python3-numpy alsa-utils v4l-utils
 mkdir -p /opt/roarm-camera
 python3 -m venv --system-site-packages --without-pip /opt/roarm-camera/.venv
 /opt/roarm-camera/.venv/bin/python -c 'import cv2,numpy'

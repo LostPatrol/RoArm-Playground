@@ -44,6 +44,10 @@ class VisionEngine:
     """Lightweight detectors with explicit missing-resource and target-loss results."""
 
     def __init__(self, model_dir=None):
+        # RK's vendor OpenCL compiler fails on standard remap kernels; this module
+        # deliberately uses CPU paths instead of repeatedly compiling/falling back.
+        if hasattr(cv2, "ocl"):
+            cv2.ocl.setUseOpenCL(False)
         self.model_dir = Path(model_dir or os.environ.get(
             "ROARM_MODEL_DIR", str(Path(__file__).resolve().parent.parent / "models")))
         cv_data = getattr(getattr(cv2, "data", None), "haarcascades", "")
@@ -78,6 +82,10 @@ class VisionEngine:
             self.face_model_error = "This OpenCV build lacks FaceDetectorYN; Haar fallback active"
         self.template = None
         self.target_shape = None
+        self.track_box = None
+        self.track_gray = self.track_points = None
+        self.track_quad = self.anchor_template = None
+        self.flow_consistency = 0.0
         self.aruco = getattr(cv2, "aruco", None)
 
     def capabilities(self):
@@ -87,11 +95,11 @@ class VisionEngine:
                      "backend": "YuNet OpenCV DNN CPU" if self.face_detector is not None else "OpenCV Haar fallback",
                      "fallback": self.face_detector is None, "error": self.face_model_error},
             "color": {"available": True, "backend": "OpenCV HSV"},
-            "markers": {"available": self.aruco is not None, "backend": "ArUco DICT_4X4_50"},
+            "markers": {"available": self.aruco is not None, "backend": "AprilTag tag36h11"},
             "objects": {"available": (self.model_dir / "yolox_nano.onnx").is_file()
                         and not self.model_error, "backend": "YOLOX-Nano OpenCV DNN CPU",
                         "error": self.model_error},
-            "track": {"available": True, "backend": "OpenCV normalized template matching"},
+            "track": {"available": True, "backend": "OpenCV adaptive tracking + multiscale template reacquisition"},
             "foam": {"available": True, "backend": "OpenCV low-saturation/brightness contour heuristic"},
             "manual": {"available": True, "backend": "image only"},
             "difference": {"available": True, "backend": "OpenCV absolute image difference"},
@@ -130,6 +138,7 @@ class VisionEngine:
                 result["confidence_kind"] = "contour solidity, not class probability"
             elif mode == "markers":
                 result["detections"] = self._markers(frame)
+                result["backend"] = "AprilTag tag36h11"
                 result["confidence_kind"] = "decoded marker presence flag"
             elif mode == "objects":
                 result["detections"] = self._objects(frame, options)
@@ -138,10 +147,11 @@ class VisionEngine:
                 result.update(self._track(frame, options))
             elif mode == "foam":
                 hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-                # Auto-exposure made the real black foam V≈170; low S separates it from the green mat.
-                threshold = max(0, min(255, int(options.get("dark_threshold", 220))))
+                # Exposure can lift black foam to V≈170. Compare with the current tabletop
+                # instead of admitting all low-saturation pixels up to V220 (including blank mat).
+                ceiling = max(0, min(255, int(options.get("dark_threshold", 220))))
                 saturation = max(0, min(255, int(options.get("max_saturation", 100))))
-                mask = cv2.inRange(hsv, (0, 0, 0), (179, saturation, threshold))
+                mask = np.full(frame.shape[:2], 255, np.uint8)
                 roi = options.get("roi")
                 if roi is not None:
                     # Mask in full-frame coordinates so returned boxes retain the public normalized geometry.
@@ -156,10 +166,15 @@ class VisionEngine:
                     region[int(y * height):int((y + h) * height),
                            int(x * width):int((x + w) * width)] = 255
                     mask &= region
+                values = hsv[:, :, 2][mask != 0]
+                reference = float(np.percentile(values, 75)) if values.size else 0
+                threshold = min(ceiling, int(reference * .88))
+                mask &= cv2.inRange(hsv, (0, 0, 0), (179, saturation, threshold))
                 result["detections"] = self._contours(frame, mask, "dark_foam_candidate", options)
                 result["backend"] = "CV low-saturation/brightness heuristic; not material identification"
-                result["confidence_kind"] = "contour solidity, not material probability"
-                result["parameters"] = dict(dark_threshold=threshold, max_saturation=saturation, roi=roi)
+                result["confidence_kind"] = "convex-hull solidity, not material probability"
+                result["parameters"] = dict(dark_threshold=ceiling, effective_dark_threshold=threshold,
+                                            tabletop_brightness=reference, max_saturation=saturation, roi=roi)
             elif mode != "manual":
                 raise ValueError("Unknown vision mode: " + str(mode))
         except (ValueError, TypeError, cv2.error, OSError) as exc:
@@ -208,22 +223,31 @@ class VisionEngine:
             # A dark frame border is not a useful foam candidate.
             if label == "dark_foam_candidate" and area > mask.size * 0.75:
                 continue
-            found.append(_box(label, box, frame.shape, area / max(1, box[2] * box[3])))
+            if label == "dark_foam_candidate" and max(box[2], box[3]) / max(1, min(box[2], box[3])) > 3.5:
+                continue  # Thin camera-edge shadows/cables are not the intended block shape.
+            # Perspective makes a rectangular block occupy only half its axis-aligned box;
+            # hull solidity describes its contour without penalizing that camera angle.
+            denominator = (cv2.contourArea(cv2.convexHull(contour))
+                           if label == "dark_foam_candidate" else box[2] * box[3])
+            found.append(_box(label, box, frame.shape, area / max(1, denominator)))
         return found[:int(options.get("max_detections", 10))]
 
     def _markers(self, frame):
         if self.aruco is None:
             raise ValueError("ArUco unavailable; use OpenCV contrib/system python3-opencv")
         aruco = self.aruco
-        dictionary = aruco.getPredefinedDictionary(aruco.DICT_4X4_50)
+        dictionary = aruco.getPredefinedDictionary(aruco.DICT_APRILTAG_36h11)
         if hasattr(aruco, "ArucoDetector"):
             corners, ids, _ = aruco.ArucoDetector(dictionary).detectMarkers(frame)
         else:
             corners, ids, _ = aruco.detectMarkers(frame, dictionary)
         if ids is None:
             return []
-        return [_box("marker_%d" % int(marker_id), cv2.boundingRect(corner), frame.shape,
-                     id=int(marker_id)) for corner, marker_id in zip(corners, ids.ravel())]
+        height, width = frame.shape[:2]
+        return [_box("tag36h11_%d" % int(marker_id), cv2.boundingRect(corner), frame.shape,
+                     id=int(marker_id), family="tag36h11",
+                     corners=(corner.reshape(-1, 2) / (width, height)).tolist())
+                for corner, marker_id in zip(corners, ids.ravel())]
 
     def _objects(self, frame, options):
         """Decode the official raw YOLOX heads, then suppress overlapping same-class boxes."""
@@ -295,7 +319,54 @@ class VisionEngine:
         if gray.std() < 4:
             raise ValueError("Target has insufficient texture; include visible object edges")
         self.template = gray.copy()
+        self.anchor_template = gray.copy()
         self.target_shape = frame.shape[:2]
+        self.track_box = (x0, y0, x1 - x0, y1 - y0)
+        self._init_tracker(frame, self.track_box)
+
+    def _init_tracker(self, frame, box):
+        """Initialize sparse optical flow using the same base OpenCV API as the RK board."""
+        self.track_box = box
+        self.track_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        mask = np.zeros(self.track_gray.shape, np.uint8)
+        x, y, w, h = map(int, box)
+        self.track_quad = np.asarray([[[x, y], [x + w, y], [x + w, y + h], [x, y + h]]], np.float32)
+        mask[max(0, y):y + h, max(0, x):x + w] = 255
+        self.track_points = cv2.goodFeaturesToTrack(self.track_gray, 80, .01, 3, mask=mask)
+
+    def _flow_track(self, gray):
+        """Track real image corners, reject inconsistent flow, and estimate translation/scale/rotation."""
+        self.flow_consistency = 0.0
+        points = self.track_points
+        if points is None or len(points) < 6:
+            return None
+        moved, status, errors = cv2.calcOpticalFlowPyrLK(self.track_gray, gray, points, None,
+                                                 winSize=(31, 31), maxLevel=3)
+        if moved is None:
+            return None
+        returned, reverse_status, _ = cv2.calcOpticalFlowPyrLK(gray, self.track_gray, moved, None,
+                                                            winSize=(31, 31), maxLevel=3)
+        if returned is None:
+            return None
+        # A forward/backward error over 1.5 pixels indicates lost/occluded features.
+        good = (status.ravel() != 0) & (reverse_status.ravel() != 0)
+        good &= np.linalg.norm(points - returned, axis=2).ravel() < 1.5
+        good &= errors.ravel() < 30  # Strong appearance mismatch is not a valid motion measurement.
+        if np.count_nonzero(good) < 6:
+            self.track_points = None
+            return None
+        transform, inliers = cv2.estimateAffinePartial2D(points[good], moved[good],
+                                                        method=cv2.RANSAC, ransacReprojThreshold=2)
+        if transform is None or inliers.sum() < 6 or inliers.mean() < .6:
+            self.track_points = None
+            return None
+        self.flow_consistency = float(good.mean() * inliers.mean())
+        self.track_quad = cv2.transform(self.track_quad, transform)
+        corners = self.track_quad[0]
+        low, high = corners.min(axis=0), corners.max(axis=0)
+        self.track_gray = gray
+        self.track_points = moved[good][inliers.ravel() != 0].reshape(-1, 1, 2)
+        return (*low, *(high - low))
 
     def _track(self, frame, options):
         if self.template is None:
@@ -303,14 +374,44 @@ class VisionEngine:
         if frame.shape[:2] != self.target_shape:
             raise ValueError("Camera resolution changed; select the target again")
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        response = cv2.matchTemplate(gray, self.template, cv2.TM_CCOEFF_NORMED)
-        _, score, _, position = cv2.minMaxLoc(response)
-        if not np.isfinite(score) or score < float(options.get("match_threshold", 0.65)):
-            return {"detections": [], "lost": True, "match_score": float(score)}
-        h, w = self.template.shape
-        return {"detections": [_box("tracked_target", (*position, w, h), frame.shape, score)],
-                "lost": False, "match_score": float(score),
-                "confidence_kind": "normalized template correlation, not class probability"}
+        source = "Lucas-Kanade optical flow"
+        tracked = self._flow_track(gray)
+        if tracked is not None:
+            x, y, w, h = map(int, tracked)
+            patch = gray[max(0, y):y + h, max(0, x):x + w]
+            if not patch.size or patch.std() < 4:
+                tracked = None
+        best = (-1.0, None)
+        # Global reacquisition covers jumps beyond optical flow's window. The original
+        # template is retained for recovery after loss; the recent template follows appearance.
+        h0, w0 = self.template.shape
+        for candidate in (self.template, self.anchor_template):
+            for scale in (.75, 1.0, 1.25):
+                w, h = max(8, int(w0 * scale)), max(8, int(h0 * scale))
+                if w > gray.shape[1] or h > gray.shape[0]:
+                    continue
+                template = cv2.resize(candidate, (w, h))
+                response = cv2.matchTemplate(gray, template, cv2.TM_CCOEFF_NORMED)
+                _, score, _, position = cv2.minMaxLoc(response)
+                if np.isfinite(score) and score > best[0]:
+                    best = (float(score), (*position, w, h))
+        score, matched = best
+        if matched is not None and score >= float(options.get("match_threshold", .65)):
+            if tracked is None or abs(tracked[0] - matched[0]) + abs(tracked[1] - matched[1]) > 30:
+                self._init_tracker(frame, matched)
+            tracked = matched
+            source = "multiscale template reacquisition"
+        if tracked is None:
+            return {"detections": [], "lost": True, "match_score": score, "track_confidence": 0.0}
+        self.track_box = tracked
+        x, y, w, h = map(int, tracked)
+        patch = gray[max(0, y):y + h, max(0, x):x + w]
+        if patch.size and patch.std() >= 4:
+            self.template = cv2.resize(patch, (w0, h0))
+        confidence = max(0, score) if source.startswith("multiscale") else self.flow_consistency
+        return {"detections": [_box("tracked_target", tracked, frame.shape, confidence)],
+                "lost": False, "match_score": score, "track_confidence": confidence, "backend": source,
+                "confidence_kind": "template correlation / consistent optical-flow presence, not class probability"}
 
     def difference(self, before, after, options=None):
         """Compare fixed-camera frames; camera motion/exposure changes can cause false changes."""

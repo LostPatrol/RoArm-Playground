@@ -18,6 +18,23 @@ ROOT = Path(__file__).resolve().parent.parent
 GESTURES = {"Open_Palm": "open", "Closed_Fist": "fist", "Victory": "victory",
             "Thumb_Up": "left", "Thumb_Down": "right"}
 MODES = {"gestures": ("gesture", "rps"), "speech": ("voice",), "clap": ("clap",)}
+# Space-separated model vocabulary is intentional: small-cn has no 向左/夹爪 tokens.
+SPEECH_PHRASES = ("停止", "停下", "找 人", "打招呼", "向 左", "左转", "向右", "右转",
+                  "抬头", "低头", "张开", "打开 夹 爪", "合拢", "关闭 夹 爪",
+                  "灯 亮", "开灯", "灯 灭", "关灯")
+
+
+def pcm_levels(pcm):
+    """Expose microphone signal quality without silently amplifying noise."""
+    samples = array.array("h", pcm)
+    if sys.byteorder != "little":
+        samples.byteswap()
+    count = max(1, len(samples))
+    rms = math.sqrt(sum(s*s for s in samples) / count) / 32768
+    return {"audio_rms": round(rms, 5),
+            "audio_dbfs": round(20 * math.log10(rms), 1) if rms else None,
+            "audio_peak": round(max((abs(s) for s in samples), default=0) / 32768, 5),
+            "clipped_fraction": round(sum(abs(s) >= 32760 for s in samples) / count, 5)}
 
 
 class Client:
@@ -98,12 +115,26 @@ def run_gestures(args, client):
         running_mode=mp.tasks.vision.RunningMode.VIDEO, num_hands=2)
     latch = GestureLatch()
     with mp.tasks.vision.GestureRecognizer.create_from_options(options) as recognizer:
+        print(json.dumps({"mode": "gestures", "worker_status": "ready"}), flush=True)
+        last_heartbeat = -math.inf
         while True:
             start = time.monotonic()
+            if not client.dry_run and start - last_heartbeat >= 2:
+                try:
+                    client.request("/api/perception", {"kind": "hands", "worker_status": "running"})
+                    last_heartbeat = start
+                except (OSError, ValueError):
+                    # RK reboot must not unload the model or permanently kill this worker.
+                    time.sleep(1)
+                    continue
             if args.image:
                 image = cv2.imread(args.image)
             else:
-                data = client.request("/snapshot.jpg")
+                try:
+                    data = client.request("/snapshot.jpg")
+                except OSError:
+                    time.sleep(1)
+                    continue
                 image = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
             if image is None:
                 raise RuntimeError("camera image could not be decoded")
@@ -196,13 +227,41 @@ def audio_chunks(args):
             process.wait()
 
 
+def speech_result(result, client, constrained=False, confidence_min=.6):
+    """Keep actual decoder text visible; reject unknown/uncertain command guesses."""
+    text = result.get("text", "").replace(" ", "")
+    confidences = [word["conf"] for word in result.get("result", []) if "conf" in word]
+    confidence = sum(confidences) / len(confidences) if confidences else None
+    accepted = bool(text) and (not constrained or (
+        "[unk]" not in text and text in {p.replace(" ", "") for p in SPEECH_PHRASES}
+        and confidence is not None and confidence >= confidence_min))
+    if not client.dry_run:
+        client.request("/api/perception", {"kind": "speech", "worker_status": "running",
+                       "text": text, "confidence": confidence, "accepted": accepted,
+                       "speech_grammar": "commands" if constrained else "full"})
+    elif text and not accepted:
+        print(json.dumps({"speech_text": text, "accepted": False, "confidence": confidence},
+                         ensure_ascii=False), flush=True)
+    if accepted:
+        client.emit({"action": "speech", "text": text}, "speech")
+
+
 def run_audio(args, client):
     """ASR uses Vosk's genuine decoder; clap detection uses PCM energy."""
     recognizer = None
     if args.mode == "speech":
         from vosk import KaldiRecognizer, Model, SetLogLevel
         SetLogLevel(-1)
-        recognizer = KaldiRecognizer(Model(args.speech_model), 16000)
+        # Default live recognition is a command grammar; file regression keeps full dictation.
+        grammar = getattr(args, "speech_grammar", "auto")
+        constrained = grammar == "commands" or (grammar == "auto" and not args.wav)
+        model = Model(args.speech_model)
+        if constrained:
+            recognizer = KaldiRecognizer(model, 16000,
+                json.dumps(list(SPEECH_PHRASES) + ["[unk]"], ensure_ascii=False))
+        else:
+            recognizer = KaldiRecognizer(model, 16000)
+        recognizer.SetWords(True)
     clap = ClapDetector(args.clap_threshold)
     previous_mode = None
     last_heartbeat = -math.inf
@@ -214,7 +273,9 @@ def run_audio(args, client):
                 "kind": args.mode, "worker_status": "running",
                 "source": "wav" if args.wav else "microphone",
                 "audio_device": args.audio_device, "channels": args.channels,
-                "warmup_seconds": args.audio_warmup})
+                "warmup_seconds": args.audio_warmup,
+                "speech_grammar": "commands" if recognizer and constrained else "full",
+                **pcm_levels(pcm)})
             last_heartbeat = now
         mode = client.mode()
         active = client.dry_run or mode in MODES[args.mode]
@@ -225,9 +286,8 @@ def run_audio(args, client):
             continue
         if recognizer:
             if recognizer.AcceptWaveform(pcm):
-                text = json.loads(recognizer.Result()).get("text", "").replace(" ", "")
-                if text:
-                    client.emit({"action": "speech", "text": text}, "speech")
+                speech_result(json.loads(recognizer.Result()), client, constrained,
+                              getattr(args, "speech_confidence", .6))
         else:
             detected, rms = clap.update(pcm, elapsed_audio if args.wav else time.monotonic())
             if detected:
@@ -235,9 +295,8 @@ def run_audio(args, client):
                 print(json.dumps({"audio_rms": round(rms, 4)}), flush=True)
         elapsed_audio += len(pcm) / 32000
     if recognizer:
-        text = json.loads(recognizer.FinalResult()).get("text", "").replace(" ", "")
-        if text:
-            client.emit({"action": "speech", "text": text}, "speech")
+        speech_result(json.loads(recognizer.FinalResult()), client, constrained,
+                      getattr(args, "speech_confidence", .6))
 
 
 def main():
@@ -246,6 +305,10 @@ def main():
     parser.add_argument("--mode", choices=MODES, required=True)
     parser.add_argument("--gesture-model", default=str(ROOT / "models/gesture_recognizer.task"))
     parser.add_argument("--speech-model", default=str(ROOT / "models/vosk-model-small-cn-0.22"))
+    parser.add_argument("--speech-grammar", choices=("auto", "commands", "full"), default="auto",
+                        help="auto: live command vocabulary, WAV full dictation")
+    parser.add_argument("--speech-confidence", type=float, default=.6,
+                        help="Minimum decoder word confidence for command grammar")
     parser.add_argument("--audio-device", default="default")
     parser.add_argument("--channels", type=int, choices=(1, 2), default=1)
     parser.add_argument("--audio-warmup", type=float, default=0.5,
@@ -256,7 +319,8 @@ def main():
     parser.add_argument("--wav", help="16kHz test WAV instead of a microphone")
     parser.add_argument("--dry-run", action="store_true", help="No POST and no hardware action")
     args = parser.parse_args()
-    if args.fps <= 0 or not 0 < args.clap_threshold <= 1 or args.audio_warmup < 0:
+    if (args.fps <= 0 or not 0 < args.clap_threshold <= 1 or args.audio_warmup < 0
+            or not 0 <= args.speech_confidence <= 1):
         parser.error("fps must be positive, audio-warmup nonnegative, clap-threshold in (0,1]")
     try:
         client = Client(args.server, args.dry_run)

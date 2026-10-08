@@ -34,6 +34,8 @@ bash host/build_director.sh cpu
 DIRECTOR_HOST=0.0.0.0 bash host/run_director.sh cpu
 ```
 
+也可安装 `bash host/install_host_service.sh http://RK-IP:8080`，用户登录后自动启动8082管理服务和导演，由网页手势/猜拳/导演的“尝试连接/加载”入口加载模型。管理服务监督手势worker退出恢复；默认不自动激活机械臂模式。管理服务本身重启后需重新点击手势加载。系统尚未登录时启动未验收，不能视为独立板端自启动的一部分。详见[host.md](host.md)。
+
 CPU构建固定llama.cpp提交、关闭GGML_NATIVE，已实际构建/推理。CUDA选项包含86/89架构，但4060/CUDA未实测；CPU路径可保留，速度需在演示笔记本重新测。
 
 将`rk3588/roarm-director.conf.example`复制到设备`/etc/systemd/system/roarm-camera.service.d/director.conf`，替换LAPTOP-IP，再`systemctl daemon-reload && systemctl restart roarm-camera`。地址变更只改配置；模型输出先预览，点击执行才运动。
@@ -46,7 +48,7 @@ CPU构建固定llama.cpp提交、关闭GGML_NATIVE，已实际构建/推理。CU
 /opt/roarm-camera/.venv/bin/python -m pip install -r /opt/roarm-camera/host/requirements-vosk.txt
 ```
 
-不要在设备安装整套host/requirements.txt。将校验后的中文模型目录复制到`/opt/roarm-camera/models/vosk-model-small-cn-0.22/`；需要alsa-utils。本轮已安装和验证。
+不要在设备安装整套host/requirements.txt。将校验后的中文模型目录复制到`/opt/roarm-camera/models/vosk-model-small-cn-0.22/`；需要alsa-utils；相机规格枚举需要 `apt-get install v4l-utils`。本轮设备已具备。光流跟踪使用已有OpenCV4.8，不需要安装CSRT或新的contrib轮子。
 
 ```bash
 bash scripts/fetch_vision_models.sh
@@ -64,11 +66,12 @@ bash rk3588/deploy_camera.sh RK-IP
 ```bash
 .venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
 node tests/test_arm_adapter.js
+node tests/test_playground_ui.js
 node --check rk3588/playground.js
 bash -n rk3588/deploy_camera.sh scripts/fetch_vision_models.sh scripts/fetch_interaction_models.sh host/build_director.sh host/run_director.sh
 ```
 
-真实图像测试用`ROARM_VISION_REAL_IMAGE`、`ROARM_VISION_FACE_IMAGE`、`ROARM_VISION_EMPTY_IMAGE`、`ROARM_FOAM_REAL_IMAGE`指定物品、人像、无人场景及泡沫本地样本；缺样本明确skip，不能计作通过。模拟测试不连接实体机械臂。
+真实图像测试用`ROARM_VISION_REAL_IMAGE`、`ROARM_VISION_FACE_IMAGE`、`ROARM_VISION_EMPTY_IMAGE`、`ROARM_FOAM_REAL_IMAGE`和`ROARM_FOAM_TASK3_IMAGE`指定物品、人像、无人场景、泡沫与task3截图样本；缺样本明确skip，不能计作通过。模拟测试不连接实体机械臂。
 
 systemd DynamicUser下音频子进程HOME指定到运行数据目录，避免Vosk缓存路径查询系统账户失败；子进程退出会在状态与事件中提示，详细原因查`journalctl -u roarm-camera`。
 
