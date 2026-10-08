@@ -63,6 +63,6 @@ node --check rk3588/playground.js
 
 rtw88来源 [lwfinger固定提交](https://github.com/lwfinger/rtw88/tree/a56bcd26e770257612a0803249cbd4095fc6feca)，匹配Linux5.10.198。设备特定 `rtl8822cu-5.10.198.tar.gz` 保留本地，未公开分发。已有网络部署不需要重装驱动；首次无线安装需 `install_rtl8822cu.sh` 所列资源。
 
-0bda:1a2b光盘模式切换由专用udev/systemd单元处理。完全断电冷启动仍未验收，软件重启/解绑不能替代。旧Type-C Hub仍不作为可用基线。
+0bda:1a2b光盘模式切换由专用udev/systemd单元处理。首次完整断电时切换失败，手动重启切换服务后已恢复；现增加3秒间隔、120秒内最多4次的失败重试，修复后完整断电仍待复验。见[开机联网说明](../docs/wifi-startup.md)。旧Type-C Hub仍不作为可用基线。
 
 本轮四轴、颜色跟随、示教/回放、真实全景、CPU导演及模拟IMU已实测。真人互动、全周人物全景、泡沫离桌、IMU硬件、4060/CUDA和冷启动见集中待处理事项，未将未完成项写成通过。

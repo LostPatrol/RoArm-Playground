@@ -12,6 +12,7 @@ scp -r "${ssh_options[@]}" "$source_dir/../host" "root@$device_host:/opt/roarm-c
 ssh "${ssh_options[@]}" "root@$device_host" 'mkdir -p /opt/roarm-camera/firmware/esp32_imu'
 scp "${ssh_options[@]}" "$source_dir/../firmware/esp32_imu/README.md" "$source_dir/../firmware/esp32_imu/config.example.h" "$source_dir/../firmware/esp32_imu/esp32_imu.ino" "root@$device_host:/opt/roarm-camera/firmware/esp32_imu/"
 scp -r "${ssh_options[@]}" "$source_dir/../docs/playground" "root@$device_host:/opt/roarm-camera/docs/"
+scp "${ssh_options[@]}" "$source_dir/../docs/wifi-startup.md" "root@$device_host:/opt/roarm-camera/docs/"
 # Model downloads are explicit and checksummed; installation never fetches new versions.
 for model in yolox_nano.onnx haarcascade_frontalface_default.xml face_detection_yunet_2023mar.onnx; do
     if [[ -f "$source_dir/../models/$model" ]]; then
