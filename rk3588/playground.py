@@ -352,8 +352,8 @@ class Playground:
     def _follow(self, mode, options, targets, token, now):
         """Refresh proportional image-centering goals without waiting for joint arrival.
 
-        Goals always start at actual feedback; 100 ms updates and larger servo speed
-        replace the old 600 ms / tiny-step movement. A greeting owns motion until it ends.
+        Goals start at actual feedback. Up to 50 ms updates use one simultaneous
+        maximum-speed servo command; a greeting owns motion until it ends.
         """
         if self.job and self.job.is_alive():
             return
@@ -368,7 +368,7 @@ class Playground:
                 self.last_seen = now
             elif mode == 'face' and now - self.last_seen > 2:
                 self.face_greeted = False
-            if now - self.last_motion < .10:
+            if now - self.last_motion < .05:
                 return
             state = self.arm.snapshot()
             if not state['connected']:
@@ -381,15 +381,18 @@ class Playground:
                 horizontal, vertical = target['cx'] - .5, target['cy'] - .5
                 centered = abs(horizontal) <= .06 and abs(vertical) <= .08
                 # Positive base turns left; positive elbow tilts the mounted camera down.
+                goals = {}
                 for joint, error, gain, limit, sign, low, high in (
-                        ('base', horizontal, 24, 8, -1, -175, 175),
-                        ('elbow', vertical, 18, 6, float(options.get('pitch_direction', 1)), 5, 170)):
+                        ('base', horizontal, 38, 12, -1, -175, 175),
+                        ('elbow', vertical, 28, 9, float(options.get('pitch_direction', 1)), 5, 170)):
                     if joint == 'elbow' and not options.get('pitch', True):
                         continue
                     angle = state['joints'].get(joint)
-                    if angle is not None and abs(error) > .04:
+                    if angle is not None and abs(error) > .03:
                         angle = max(low, min(high, angle + sign * max(-limit, min(limit, error * gain))))
-                        self.arm.move(joint, angle=angle, speed=500)
+                        goals[joint] = angle
+                if goals:
+                    self.arm.pose(goals, simultaneous=True)
                 if (mode == 'face' and centered and options.get('greet', True)
                         and not self.face_greeted and now - self.last_greet > 8):
                     self.face_greeted = True
@@ -408,7 +411,7 @@ class Playground:
                         self.scan_direction = -1
                     elif angle <= low:
                         self.scan_direction = 1
-                    self.arm.move('base', angle=max(low, min(high, angle + self.scan_direction * 6)), speed=500)
+                    self.arm.move('base', angle=max(low, min(high, angle + self.scan_direction * 6)))
             self.last_motion = now
 
     def _vision_loop(self):
@@ -661,10 +664,10 @@ class Playground:
                     return dict(enabled=getattr(self.arm, action)(data['enabled']))
                 if action == 'cartesian':
                     return dict(target=self.arm.cartesian(data['x'], data['y'], data['z'],
-                                data.get('t'), speed=data.get('spd', .25)))
+                                data.get('t'), speed=data.get('spd', 1), direct=data.get('direct', False)))
                 if action == 'cartesian_delta':
                     return dict(target=self.arm.cartesian_delta(data.get('axis'), data.get('delta'),
-                                speed=data.get('spd', .25)))
+                                speed=data.get('spd', 1)))
                 if action == 'raw':
                     return dict(response=self.arm.raw(data.get('command', '')))
                 return dict(target=self.arm.move(data.get('joint'), data.get('angle'), data.get('delta')))

@@ -113,6 +113,7 @@ class ArmController:
         self.state = dict(connected=False, transport='usb-serial', joints={},
                           targets={}, raw={}, error='正在读取串口', updated=0)
         self.closed = threading.Event()
+        self.direct_speed_ready = False  # T1041 inherits firmware-wide speed/acceleration arrays.
         if poll:
             threading.Thread(target=self._poll, daemon=True).start()
 
@@ -136,7 +137,7 @@ class ArmController:
                 self.read()
             except Exception:
                 pass
-            self.closed.wait(.3 if self.state['connected'] else 1)
+            self.closed.wait(.04 if self.state['connected'] else 1)
 
     def snapshot(self):
         with self.lock:
@@ -145,10 +146,18 @@ class ArmController:
             result['connected'] = False
         return result
 
-    def move(self, joint, angle=None, delta=None, speed=100):
+    def measured(self):
+        """Reuse fresh polled feedback; continuous targets must not wait for another T105."""
+        state = self.snapshot()
+        return state if state['connected'] and time.time() - state['updated'] < .2 else self.read()
+
+    def move(self, joint, angle=None, delta=None, speed=0, acceleration=0):
         if joint not in JOINTS:
             raise ValueError('未知关节')
-        state = self.read()
+        # Relative buttons need a new reference; absolute slider targets do not.
+        state = self.read() if angle is None else self.snapshot()
+        if not state['connected']:
+            state = self.read()
         if angle is None:
             if delta is None:
                 raise ValueError('需要 angle 或 delta')
@@ -158,21 +167,34 @@ class ArmController:
         if not math.isfinite(angle) or not low <= angle <= high:
             raise ValueError('%s 角度须在 %s..%s 度内' % (joint, low, high))
         self.transport.command({'T': 101, 'joint': JOINTS.index(joint) + 1,
-                                'rad': math.radians(angle), 'spd': speed, 'acc': 5})
+                                'rad': math.radians(angle), 'spd': speed, 'acc': acceleration})
+        if speed or acceleration:
+            self.direct_speed_ready = False
         with self.lock:
             self.state['targets'][joint] = angle
             self.state.pop('cartesian_target', None)
         return angle
 
-    def pose(self, joints):
+    def pose(self, joints, simultaneous=False):
         # Validate the whole pose before moving any joint.
         if not isinstance(joints, dict) or not joints:
             raise ValueError('姿态不能为空')
         for name, angle in joints.items():
             if name not in LIMITS or not math.isfinite(float(angle)) or not LIMITS[name][0] <= float(angle) <= LIMITS[name][1]:
                 raise ValueError('姿态关节或角度超出范围')
-        for name, angle in joints.items():
-            self.move(name, angle=angle)
+        if simultaneous:
+            # Follow both camera axes with one native SyncWrite; hold other measured axes.
+            goal = dict(self.measured()['joints'], **joints)
+            self.transport.command(dict(T=102, base=math.radians(goal['base']),
+                shoulder=math.radians(goal['shoulder']), elbow=math.radians(goal['elbow']),
+                hand=math.radians(goal['gripper']), spd=0, acc=0))
+            self.direct_speed_ready = True
+            with self.lock:
+                self.state['targets'].update(goal)
+                self.state.pop('cartesian_target', None)
+        else:
+            for name, angle in joints.items():
+                self.move(name, angle=angle)
 
     def led(self, value):
         value = int(value)
@@ -186,6 +208,7 @@ class ArmController:
         self.transport.command({'T': 102, 'base': 0, 'shoulder': 0,
                                 'elbow': 1.5707965, 'hand': 3.1415926,
                                 'spd': 0, 'acc': 0})
+        self.direct_speed_ready = True
         with self.lock:
             self.state['targets'] = dict(base=0, shoulder=0, elbow=90, gripper=180)
             self.state.pop('cartesian_target', None)
@@ -200,7 +223,7 @@ class ArmController:
                                 'b': 60, 's': 110, 'e': 50, 'h': 50})
         return bool(enabled)
 
-    def cartesian(self, x, y, z, t=None, speed=.25):
+    def cartesian(self, x, y, z, t=None, speed=1, direct=False):
         """Factory IK moves XYZ in mm, preserving the measured clamp angle by default."""
         x, y, z, speed = (float(value) for value in (x, y, z, speed))
         if not all(math.isfinite(value) for value in (x, y, z, speed)) or not 0 < speed <= 1:
@@ -219,18 +242,29 @@ class ArmController:
             raise ValueError('目标坐标对应的关节角度超出范围')
         if t is None:
             # Encoder noise near the jaw limits must not make XYZ-only moves unusable.
-            t = max(math.radians(45), min(math.pi, self.read()['raw']['t']))
+            t = max(math.radians(45), min(math.pi, self.measured()['raw']['t']))
         t = float(t)
         if not math.isfinite(t) or not math.radians(45) <= t <= math.pi + 1e-6:
             raise ValueError('夹爪 t 须在 45..180 度对应的弧度范围内')
-        self.transport.command({'T': 104, 'x': x, 'y': y, 'z': z, 't': t, 'spd': speed})
+        if type(direct) is not bool:
+            raise ValueError('direct 须为布尔值')
+        if direct:
+            if not self.direct_speed_ready:
+                # Initialize inherited speed arrays once after stop/raw/slow commands.
+                raw = self.measured()['raw']
+                self.transport.command(dict(T=102, base=raw['b'], shoulder=raw['s'],
+                                             elbow=raw['e'], hand=raw['t'], spd=0, acc=0))
+                self.direct_speed_ready = True
+            self.transport.command(dict(T=1041, x=x, y=y, z=z, t=t))
+        else:
+            self.transport.command(dict(T=104, x=x, y=y, z=z, t=t, spd=speed))
         target['gripper'] = math.degrees(t)
         with self.lock:
             self.state['targets'].update(target)
             self.state['cartesian_target'] = dict(x=x, y=y, z=z, t=t)
-        return dict(x=x, y=y, z=z, t=t, spd=speed)
+        return dict(x=x, y=y, z=z, t=t, **({'direct': True} if direct else {'spd': speed}))
 
-    def cartesian_delta(self, axis, delta, speed=.25):
+    def cartesian_delta(self, axis, delta, speed=1):
         if axis not in ('x', 'y', 'z', 't') or not math.isfinite(float(delta)):
             raise ValueError('坐标增量须使用 x/y/z/t 和有效数值')
         raw = self.read()['raw']
@@ -254,6 +288,7 @@ class ArmController:
         if command['T'] == 105:
             return self.read()['raw']
         self.transport.command(command)
+        self.direct_speed_ready = False
         return dict(sent=command)
 
     def stop(self):
@@ -264,6 +299,7 @@ class ArmController:
         # T102 uses full joint names and integer servo steps/s, unlike T122's b/s/e/h.
         self.transport.command({'T': 102, 'base': raw['b'], 'shoulder': raw['s'],
                                 'elbow': raw['e'], 'hand': raw['t'], 'spd': 100, 'acc': 5})
+        self.direct_speed_ready = False
         with self.lock:
             self.state['targets'] = dict(self.state['joints'])
             self.state.pop('cartesian_target', None)

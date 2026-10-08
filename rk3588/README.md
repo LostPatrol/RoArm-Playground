@@ -49,11 +49,14 @@ journalctl -u roarm-camera -n 40 --no-pager
 
 卡片切换结束旧自动模式。停止取消程序、逐轴终止T123，再用T102保持实测姿态；物理连接中断时不能保证停车送达。未改PID、力矩、DEFA、BOOT或任务FLASH。
 
-夹爪45..180°，角度减小张开。网页为度；T101/T102为rad，速度100为舵机steps/s。普通演示允许机械误差，模型角度不能证明实体到位。
+工作台上方并列视频/实验与模型/关节控制，下方分列坐标和原厂命令工具。夹爪45..180°，角度减小张开；网页为度，T101/T102为rad。普通关节和双轴随动使用原厂INIT的最大速度参数 `spd=0 acc=0`；普通坐标按钮使用T104，模型连续拖动使用不逐段阻塞的T1041，首次由实测T102准备0/0参数。控制细节见[机械臂控制](../docs/playground/controls.md)。
+
+实时目标首发合并16ms，持续发送约33ms周期、单在途且只保留最新值；串口每次读取后等待40ms，网页每100ms读状态。模型动画在实测样本间插值，不以请求目标代替反馈。调度间隔不代表实测吞吐或动作到位时间；普通演示允许机械误差，模型角度不能证明实体到位。
 
 ```sh
 .venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
 node tests/test_arm_adapter.js
+node tests/test_playground_ui.js
 node --check rk3588/playground.js
 ```
 

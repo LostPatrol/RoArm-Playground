@@ -35,6 +35,9 @@ class FakeTransport:
         self.calls.append(dict(command))
         if command['T'] == 101:
             self.raw[('b', 's', 'e', 't')[command['joint'] - 1]] = command['rad']
+        elif command['T'] == 102:
+            self.raw.update({key: command[name] for key, name in
+                             zip(('b', 's', 'e', 't'), ('base', 'shoulder', 'elbow', 'hand'))})
         return dict(self.raw) if feedback else None
 
     def close(self):
@@ -114,13 +117,28 @@ class ProgramTests(unittest.TestCase):
     def test_visual_follow_updates_base_and_pitch_without_arrival_wait(self):
         """Both camera axes use measured angles and faster continuous goal refresh."""
         self.app.mode = 'face'
-        with patch.object(self.arm, 'move', wraps=self.arm.move) as move:
+        with patch.object(self.arm, 'pose', wraps=self.arm.pose) as pose:
             self.app._follow('face', {'greet': False},
                              [dict(cx=.8, cy=.75, w=.2, h=.2)], self.app.cancel, 10)
-        self.assertEqual([call.args[0] for call in move.call_args_list], ['base', 'elbow'])
-        self.assertLess(move.call_args_list[0].kwargs['angle'], 0)
-        self.assertGreater(move.call_args_list[1].kwargs['angle'], 90)
-        self.assertTrue(all(call.kwargs['speed'] == 500 for call in move.call_args_list))
+        pose.assert_called_once()
+        self.assertEqual(pose.call_args.kwargs, dict(simultaneous=True))
+        self.assertAlmostEqual(pose.call_args.args[0]['base'], -11.4)
+        self.assertEqual(pose.call_args.args[0]['elbow'], 97)
+        movement = [command for command in self.transport.calls if command['T'] in (101, 102)]
+        self.assertEqual(len(movement), 1)
+        self.assertEqual(movement[0]['T'], 102)
+        self.assertEqual((movement[0]['spd'], movement[0]['acc']), (0, 0))
+
+    def test_follow_refresh_interval_and_pitch_toggle(self):
+        """Fast camera results are throttled to 50 ms without accumulating commands."""
+        self.app.mode = 'color'
+        target = [dict(cx=.9, cy=.9, w=.2, h=.2)]
+        with patch.object(self.arm, 'pose') as pose:
+            self.app._follow('color', {'pitch': False}, target, self.app.cancel, 10)
+            self.app._follow('color', {'pitch': False}, target, self.app.cancel, 10.04)
+            self.app._follow('color', {'pitch': False}, target, self.app.cancel, 10.06)
+        self.assertEqual(pose.call_count, 2)
+        self.assertTrue(all(call.args[0] == dict(base=-12) for call in pose.call_args_list))
 
     def test_face_greeting_retains_detection_and_rearms_after_loss(self):
         self.app.mode = 'face'
@@ -139,8 +157,9 @@ class ProgramTests(unittest.TestCase):
         self.app.mode = 'face'
         self.app.job = Mock()
         self.app.job.is_alive.return_value = True
-        with patch.object(self.arm, 'move') as move:
+        with patch.object(self.arm, 'pose') as pose, patch.object(self.arm, 'move') as move:
             self.app._follow('face', {}, [dict(cx=.9, cy=.9, w=.2, h=.2)], self.app.cancel, 20)
+        pose.assert_not_called()
         move.assert_not_called()
         self.app.job = None
 
@@ -165,6 +184,13 @@ class ProgramTests(unittest.TestCase):
         commands = [command for command in self.transport.calls if command['T'] == 101]
         self.assertEqual(len(commands), 1, commands)
         self.assertAlmostEqual(commands[0]['rad'], math.radians(5))
+        self.assertFalse(any(command['T'] == 102 for command in self.transport.calls))
+
+    def test_drag_api_passes_direct_coordinates_and_fixed_clamp(self):
+        with patch.object(self.arm, 'cartesian', return_value={}) as cartesian:
+            self.app.action(dict(action='cartesian', x=310, y=8, z=240,
+                                 t=math.pi, direct=True))
+        cartesian.assert_called_once_with(310, 8, 240, math.pi, speed=1, direct=True)
 
     def test_managed_audio_home_and_failed_worker_are_reported(self):
         """DynamicUser has no passwd entry; Vosk must receive a writable HOME."""

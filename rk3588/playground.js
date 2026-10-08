@@ -75,17 +75,19 @@ globalThis.RoArmModel = {
   let graspBusy = false;
   let cameraYaw = .75, cameraPitch = .32, modelDrag = null;
   let modelView=null, modelTip=null, modelTarget=null, cameraModes=[];
+  // Animate only between measured samples; never substitute a requested pose for real feedback.
+  let modelMotion=null, modelFrame=null;
   // One live request at a time, keeping only the latest value of each dragged control.
-  const liveCommands=new Map(); let liveSending=false, liveTimer=null, liveActiveKey=null;
+  const liveCommands=new Map(); let liveSending=false, liveTimer=null, liveActiveKey=null, liveSentAt=0;
   async function drainLive() {
     liveTimer=null;
     if(liveSending||!liveCommands.size)return;
-    const [key,command]=liveCommands.entries().next().value;liveCommands.delete(key);liveSending=true;liveActiveKey=key;
+    const [key,command]=liveCommands.entries().next().value;liveCommands.delete(key);liveSending=true;liveActiveKey=key;liveSentAt=Date.now();
     await action(command.name,command.payload,null,true);
     liveSending=false;liveActiveKey=null;
-    if(liveCommands.size)liveTimer=setTimeout(drainLive,60);
+    if(liveCommands.size)liveTimer=setTimeout(drainLive,Math.max(0,33-(Date.now()-liveSentAt)));
   }
-  function liveAction(key,name,payload){liveCommands.set(key,{name,payload});if(!liveSending&&!liveTimer)liveTimer=setTimeout(drainLive,35);}
+  function liveAction(key,name,payload){liveCommands.set(key,{name,payload});if(!liveSending&&!liveTimer)liveTimer=setTimeout(drainLive,Math.max(16,33-(Date.now()-liveSentAt)));}
   function clearLive(){liveCommands.clear();if(liveTimer)clearTimeout(liveTimer);liveTimer=null;modelTarget=null;}
 
   function node(tag, text, className) {
@@ -367,7 +369,7 @@ globalThis.RoArmModel = {
     try {
       const response=await fetch('/api/state',{cache:'no-store',signal:AbortSignal.timeout(4000)});
       if(!response.ok)throw new Error(`HTTP ${response.status}`);
-      state=await response.json(); online=true;
+      state=await response.json(); online=true;acceptModelFeedback();
       $('connection').className='status-pill'+(state.arm?.connected?' online':' warning');
       $('connection').replaceChildren(node('i'),node('span',state.arm?.connected?'串口机械臂在线':'机械臂未连接'));
       if(state.arm?.error)$('connection').title=state.arm.error;
@@ -458,6 +460,20 @@ globalThis.RoArmModel = {
   $('overlay').onpointercancel=()=>{dragStart=null;selection=null;drawOverlay();};
 
   // Forward kinematics -> camera rotation -> perspective projection. Unknown feedback draws only the stage.
+  function renderedJoints(now=Date.now()) {
+    if(!modelMotion)return state.arm?.joints||{};
+    const ratio=Math.min(1,Math.max(0,(now-modelMotion.start)/80));
+    return Object.fromEntries(Object.keys(JOINTS).map(key=>[key,modelMotion.from[key]+(modelMotion.to[key]-modelMotion.from[key])*ratio]));
+  }
+  function animateModel(){modelFrame=null;drawRobot();if(modelMotion&&Date.now()-modelMotion.start<80)modelFrame=requestAnimationFrame(animateModel);}
+  function acceptModelFeedback(){
+    const next=state.arm?.joints;
+    if(!state.arm?.connected||!next||!Object.keys(JOINTS).every(key=>Number.isFinite(next[key]))){modelMotion=null;return;}
+    if(modelMotion&&Object.keys(JOINTS).every(key=>next[key]===modelMotion.to[key]))return;
+    const from=modelMotion?renderedJoints():{...next};
+    modelMotion={from,to:{...next},start:Date.now()};
+    if(modelFrame===null)modelFrame=requestAnimationFrame(animateModel);
+  }
   function drawRobot(){
     const{context:c,w,h}=canvasSize($('robot-view'));if(!w||!h)return;
     modelView={w,h,yaw:cameraYaw,pitch:cameraPitch,center:240,focal:Math.min(w*.9,h*1.2),distance:1200};
@@ -465,7 +481,7 @@ globalThis.RoArmModel = {
     const line=(a,b,color,width=1)=>{const p=project(a),q=project(b);c.strokeStyle=color;c.lineWidth=width;c.lineCap='round';c.beginPath();c.moveTo(p.x,p.y);c.lineTo(q.x,q.y);c.stroke();};
     for(let i=-3;i<=3;i++){line([i*70,-210,0],[i*70,210,0],'#dce3d7');line([-210,i*70,0],[210,i*70,0],'#dce3d7');}
     line([0,0,0],[120,0,0],'#cf8370',2);line([0,0,0],[0,120,0],'#89ac76',2);
-    const joints=state.arm?.joints||{};
+    const joints=renderedJoints();
     modelTip=null;
     if(!online||!state.arm?.connected||!Object.keys(JOINTS).every(key=>Number.isFinite(joints[key]))){c.fillStyle='#768b7e';c.font='12px system-ui';c.textAlign='center';c.fillText('等待真实关节反馈',w/2,h*.42);return;}
     const points=RoArmModel.points(joints),base=joints.base*Math.PI/180;
@@ -482,7 +498,7 @@ globalThis.RoArmModel = {
     if(modelTarget){const p=project(modelTarget);c.strokeStyle='#e77846';c.lineWidth=2;c.beginPath();c.arc(p.x,p.y,10,0,Math.PI*2);c.stroke();}
   }
   function modelPixel(event){const bounds=$('robot-view').getBoundingClientRect();return{x:event.clientX-bounds.left,y:event.clientY-bounds.top};}
-  $('robot-view').onpointerdown=event=>{const pixel=modelPixel(event);if(event.button!==0)return;const moving=$('model-sync').checked&&modelTip&&Math.hypot(pixel.x-modelTip.x,pixel.y-modelTip.y)<28;modelDrag={...pixel,moving,anchor:modelTip?.point?.slice(),view:{...modelView},plane:$('model-plane').value};$('robot-view').setPointerCapture(event.pointerId);};
+  $('robot-view').onpointerdown=event=>{const pixel=modelPixel(event);if(event.button!==0)return;const moving=$('model-sync').checked&&modelTip&&Math.hypot(pixel.x-modelTip.x,pixel.y-modelTip.y)<28;modelDrag={...pixel,moving,anchor:modelTip?.point?.slice(),view:{...modelView},plane:$('model-plane').value,t:Math.max(Math.PI/4,Math.min(Math.PI,(state.arm?.joints?.gripper||180)*Math.PI/180))};$('robot-view').setPointerCapture(event.pointerId);};
   $('robot-view').onpointermove=event=>{
     if(!modelDrag)return;const pixel=modelPixel(event);
     if(modelDrag.moving){
@@ -490,7 +506,7 @@ globalThis.RoArmModel = {
       if(!target){notify('当前视角与拖动平面接近平行，请旋转视角后再拖。',true);return;}
       const length=Math.hypot(target[0],target[1],target[2]-RoArmModel.pedestal);
       if(length>=RoArmModel.link2+RoArmModel.link3||length<=Math.abs(RoArmModel.link3-RoArmModel.link2)){notify('拖动目标超出连杆可达范围。',true);return;}
-      modelTarget=target;liveAction('model','cartesian',{x:target[0],y:target[1],z:target[2]-RoArmModel.pedestal,spd:number('coord-speed')});
+      modelTarget=target;liveAction('model','cartesian',{x:target[0],y:target[1],z:target[2]-RoArmModel.pedestal,t:modelDrag.t,direct:true});
     }else{cameraYaw+=(pixel.x-modelDrag.x)*.012;cameraPitch=Math.max(.08,Math.min(1.3,cameraPitch+(pixel.y-modelDrag.y)*.01));modelDrag.x=pixel.x;modelDrag.y=pixel.y;}
     drawRobot();
   };
@@ -601,5 +617,5 @@ globalThis.RoArmModel = {
   window.addEventListener('pagehide',leaveStop);document.addEventListener('visibilitychange',()=>{if(document.hidden)leaveStop();});
   window.addEventListener('resize',()=>{drawOverlay();drawRobot();});
   window.addEventListener('beforeunload',event=>{if(programDirty){event.preventDefault();event.returnValue='';}});
-  renderCards();drawRobot();pollState();pollCamera();setInterval(pollState,1200);setInterval(pollCamera,2500);
+  renderCards();drawRobot();pollState();pollCamera();setInterval(pollState,100);setInterval(pollCamera,2500);
 })();

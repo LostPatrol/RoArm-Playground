@@ -23,7 +23,7 @@ for(const yaw of [-2,-.4,.75,2])for(const pitch of [.1,.32,.8,1.25]){
 }
 
 function environment(){
-  const elements=new Map(),timers=new Map(),actions=[],listeners={},cards=[];let nextTimer=1;
+  const elements=new Map(),timers=new Map(),actions=[],listeners={},cards=[],intervals=[],frames=[],arcs=[];let nextTimer=1,now=0;
   class Element{
     constructor(tag='div'){this.tag=tag;this.children=[];this.style={};this.dataset={};this.value='';this.checked=false;this.hidden=false;this.width=400;this.height=240;this.className='';this.classList={add:()=>{},toggle:()=>{}};}
     set id(value){this._id=value;elements.set(value,this);}get id(){return this._id;}
@@ -31,7 +31,7 @@ function environment(){
     replaceChildren(...items){this.children=items;}
     setAttribute(key,value){this[key]=value;}removeAttribute(key){delete this[key];}
     getBoundingClientRect(){return{left:0,top:0,width:400,height:240};}
-    getContext(){return new Proxy({measureText:text=>({width:text.length*6})},{get:(target,key)=>key in target?target[key]:()=>{}});}
+    getContext(){return new Proxy({measureText:text=>({width:text.length*6}),arc:(x,y,r)=>{if(this.id==='robot-view')arcs.push({x,y,r});}},{get:(target,key)=>key in target?target[key]:()=>{}});}
     querySelector(){return new Element();}setPointerCapture(){}scrollIntoView(){}
   }
   const html=fs.readFileSync(path.join(__dirname,'../rk3588/control.html'),'utf8');
@@ -45,9 +45,10 @@ function environment(){
     if(url==='/api/action')return new Promise(resolve=>actions.push({packet:JSON.parse(options.body),options,finish:()=>resolve(response({ok:true,result:{requested:true}}))}));
     return Promise.resolve(response(url==='/api/state'?state:url==='/status'?{ready:false}: {modes:[{id:'m1',width:640,height:480,fps:30,fourcc:'MJPG'}]}));
   };
-  const context=vm.createContext({document,fetch,AbortSignal,URL,console,Date,Math,setInterval:()=>{},setTimeout:fn=>{const id=nextTimer++;timers.set(id,fn);return id;},clearTimeout:id=>timers.delete(id),addEventListener:(name,callback)=>listeners[name]=callback,devicePixelRatio:1});
+  class ClockDate extends Date{static now(){return now;}}
+  const context=vm.createContext({document,fetch,AbortSignal,URL,console,Date:ClockDate,Math,setInterval:(fn,ms)=>intervals.push({fn,ms}),requestAnimationFrame:fn=>{frames.push(fn);return frames.length;},setTimeout:fn=>{const id=nextTimer++;timers.set(id,fn);return id;},clearTimeout:id=>timers.delete(id),addEventListener:(name,callback)=>listeners[name]=callback,devicePixelRatio:1});
   context.window=context;vm.runInContext(source,context);
-  return{elements,actions,listeners,timers,cards,state,runTimers(){const pending=[...timers];timers.clear();for(const [,fn] of pending)fn();}};
+  return{elements,actions,listeners,timers,cards,state,intervals,arcs,frame(ms){now=ms;const pending=frames.splice(0);for(const fn of pending)fn();},runTimers(){const pending=[...timers];timers.clear();for(const [,fn] of pending)fn();}};
 }
 const settle=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};
 (async()=>{
@@ -78,7 +79,18 @@ const settle=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};
   canvas.onpointerdown({button:0,pointerId:1,clientX:tip.x,clientY:tip.y});
   canvas.onpointermove({clientX:tip.x+4,clientY:tip.y+3});canvas.onpointerup();d.runTimers();
   assert.equal(d.actions[0].packet.action,'cartesian');assert.ok(Math.abs(d.actions[0].packet.y)<1e-7);
-  assert.notEqual(d.actions[0].packet.x,310.15534);assert.equal(d.actions[0].packet.spd,.5);
+  assert.notEqual(d.actions[0].packet.x,310.15534);assert.equal(d.actions[0].packet.direct,true);assert.equal(d.actions[0].packet.t,Math.PI);
+  assert.equal('spd' in d.actions[0].packet,false);
   assert.equal(d.elements.get('feedback-base').textContent,'0.0°');
+  // A requested target never drives the green model; measured changes animate between samples.
+  assert.equal(d.intervals[0].ms,100);
+  d.frame(100);d.state.arm.joints.base=40;await d.intervals[0].fn();
+  assert.equal(d.elements.get('feedback-base').textContent,'40.0°');
+  d.arcs.length=0;d.frame(140);
+  const halfway=model.project(model.points({base:20,shoulder:0,elbow:90,gripper:180})[3],view);
+  assert.ok(d.arcs.some(arc=>arc.r===7&&Math.abs(arc.x-halfway.x)<1e-8&&Math.abs(arc.y-halfway.y)<1e-8));
+  d.arcs.length=0;d.frame(180);
+  const measured=model.project(model.points(d.state.arm.joints)[3],view);
+  assert.ok(d.arcs.some(arc=>arc.r===7&&Math.abs(arc.x-measured.x)<1e-8&&Math.abs(arc.y-measured.y)<1e-8));
   console.log('UI tests passed: manufacturer FK, perspective ray/plane, latest live input, preserved recognition, stop/exit ordering, camera and command controls.');
 })().catch(error=>{console.error(error);process.exitCode=1;});
