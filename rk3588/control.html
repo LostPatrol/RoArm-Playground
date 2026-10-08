@@ -1,0 +1,92 @@
+<!-- RK3588 control entry: live USB camera and the arm's original interface together. -->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>RoArm-M2 · 视频与控制</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; color: #edf3fa; background: #17202b; font: 15px system-ui, sans-serif; }
+    header { padding: 20px 24px; border-bottom: 1px solid #344455; }
+    h1 { margin: 0 0 8px; font-size: 24px; }
+    p { line-height: 1.5; }
+    header p { margin: 0; color: #aebdcd; }
+    main { display: grid; grid-template-columns: minmax(320px, 1fr) minmax(540px, 1fr); gap: 20px; padding: 20px; }
+    section { min-width: 0; border: 1px solid #344455; border-radius: 10px; overflow: hidden; background: #1d2936; }
+    .heading { padding: 16px; }
+    h2 { margin: 0 0 8px; font-size: 19px; }
+    .heading p { margin: 0; color: #b9c8d8; }
+    #camera { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: contain; background: #111923; }
+    #camera[hidden] { display: none; }
+    #empty { padding: 70px 20px; text-align: center; color: #aebdcd; }
+    .actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 14px 16px; }
+    a { color: #8acbff; }
+    button { cursor: pointer; padding: 8px 12px; color: #edf3fa; background: #344455; border: 1px solid #577089; border-radius: 6px; }
+    iframe { display: block; width: 100%; height: calc(100vh - 240px); min-height: 620px; border: 0; background: #252936; }
+    @media (max-width: 980px) { main { grid-template-columns: 1fr; } iframe { height: 780px; } }
+  </style>
+</head>
+<body>
+  <header><h1>RoArm-M2 · 视频与控制</h1><p>摄像头画面与机械臂原生控制同屏。按住方向键运动，松开停止对应轴。</p></header>
+  <main>
+    <section>
+      <div class="heading"><h2>摄像头实时画面</h2><p id="status">正在检查摄像头…</p></div>
+      <img id="camera" hidden alt="机械臂摄像头实时画面">
+      <div id="empty">等待摄像头画面</div>
+      <div class="actions"><a href="/snapshot.jpg" target="_blank">查看当前照片</a><button id="reconnect">重连视频</button></div>
+    </section>
+    <section>
+      <div class="heading"><h2>机械臂原生控制</h2><p id="arm-status">正在连接机械臂…</p></div>
+      <div class="actions"><button id="stop">停止持续运动</button><button id="reload-arm">重载控制页面</button></div>
+      <iframe id="arm" src="/arm/" title="RoArm-M2 原生控制界面"></iframe>
+    </section>
+  </main>
+  <script>
+    // Re-open MJPEG after disconnect and rediscovery, without depending on videoN.
+    const camera = document.getElementById('camera');
+    let live = false;
+    function resetVideo() { camera.removeAttribute('src'); live = false; }
+    async function updateCamera() {
+      try {
+        const response = await fetch('/status', {cache: 'no-store', signal: AbortSignal.timeout(4000)});
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        const s = await response.json();
+        document.getElementById('status').textContent = s.ready ?
+          `在线 · ${s.width} × ${s.height} · ${s.fps} 帧/秒 · ${s.device}` : '等待摄像头：' + s.error;
+        camera.hidden = !s.ready;
+        document.getElementById('empty').hidden = s.ready;
+        if (s.ready && !live) { camera.src = '/stream.mjpg?t=' + Date.now(); live = true; }
+        if (!s.ready) resetVideo();
+      } catch (e) {
+        document.getElementById('status').textContent = '无法连接视频服务';
+        resetVideo(); camera.hidden = true; document.getElementById('empty').hidden = false;
+      }
+    }
+    camera.onerror = resetVideo;
+    document.getElementById('reconnect').onclick = () => { resetVideo(); updateCamera(); };
+    updateCamera(); setInterval(updateCamera, 2000);
+
+    const arm = document.getElementById('arm');
+    document.getElementById('stop').onclick = () => {
+      if (arm.contentWindow.stopArm) arm.contentWindow.stopArm(true);
+      else document.getElementById('arm-status').textContent = '控制页面未连接，无法发送停止，请检查机械臂网络';
+    };
+    document.getElementById('reload-arm').onclick = () => {
+      arm.contentWindow.stopArm?.();
+      arm.src = '/arm/';
+    };
+    arm.onload = () => {
+      // The adapter reports native requests; an HTML proxy error is visible here too.
+      if (!arm.contentWindow.stopArm) document.getElementById('arm-status').textContent = '机械臂连接失败，请检查网络后重载';
+    };
+    window.addEventListener('message', event => {
+      if (event.origin === location.origin && event.source === arm.contentWindow && event.data?.armStatus)
+        document.getElementById('arm-status').textContent = event.data.armStatus;
+    });
+    window.addEventListener('blur', () => { if (!document.hasFocus()) arm.contentWindow.stopArm?.(); });
+    window.addEventListener('pagehide', () => arm.contentWindow.stopArm?.());
+    document.addEventListener('visibilitychange', () => { if (document.hidden) arm.contentWindow.stopArm?.(); });
+  </script>
+</body>
+</html>

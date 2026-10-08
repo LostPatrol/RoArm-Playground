@@ -1,0 +1,9 @@
+# Switch only the Realtek adapter at the USB path supplied by udev.
+[Unit]
+Description=Switch Realtek USB Wi-Fi adapter on port %i
+After=roarm-wifi-usb.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/roarm-camera/.venv/bin/python /opt/roarm-camera/switch_wifi_usb.py %i
+TimeoutStartSec=25

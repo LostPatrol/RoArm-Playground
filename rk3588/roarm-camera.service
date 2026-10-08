@@ -1,0 +1,19 @@
+# Capture the USB camera using this project's Python environment.
+[Unit]
+Description=RoArm USB camera preview and MJPEG streaming
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/opt/roarm-camera/.venv/bin/python /opt/roarm-camera/camera_server.py
+Restart=on-failure
+RestartSec=3
+DynamicUser=yes
+SupplementaryGroups=video
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

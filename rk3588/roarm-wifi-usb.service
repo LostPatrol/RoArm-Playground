@@ -1,0 +1,15 @@
+# Preserve USB storage quirks and prepare the known Realtek adapter before udev.
+[Unit]
+Description=Prepare Realtek RTL8822CU USB mode switching
+DefaultDependencies=no
+Before=systemd-udev-trigger.service
+ConditionPathExists=/sys/module/usb_storage/parameters/quirks
+
+[Service]
+Type=oneshot
+ExecStart=/opt/roarm-camera/.venv/bin/python /opt/roarm-camera/prepare_wifi_usb.py
+TimeoutStartSec=8
+RemainAfterExit=yes
+
+[Install]
+WantedBy=sysinit.target

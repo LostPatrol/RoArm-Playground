@@ -1,0 +1,16 @@
+# Public source repository: keep credentials, local evidence and generated files private.
+/.venv/
+__pycache__/
+*.py[cod]
+/.env
+/.env.*
+!/.env.example
+/*.pem
+/*.key
+/AGENTS.md
+/MEMORY.md
+/MEMORTY.md
+/agent/
+/rk3588/system-test/
+# Device-specific modules/firmware remain local; see docs/development.md.
+/rk3588/rtl8822cu-5.10.198.tar.gz

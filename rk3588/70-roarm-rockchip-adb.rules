@@ -1,0 +1,2 @@
+# Allow the local plugdev group to access this Rockchip ADB USB interface.
+SUBSYSTEM=="usb", ATTR{idVendor}=="2207", ATTR{idProduct}=="0000", GROUP="plugdev", MODE="0660", TAG+="uaccess"

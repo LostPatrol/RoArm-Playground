@@ -1,0 +1,14 @@
+# Historical Type-C experiment; disabled for the verified USB-A hub topology.
+[Unit]
+Description=Prefer USB Type-C source role for the camera hub
+After=systemd-udev-trigger.service
+ConditionPathExists=/sys/class/typec/port0/preferred_role
+
+[Service]
+Type=oneshot
+ExecStart=/opt/roarm-camera/.venv/bin/python -c "from pathlib import Path; Path('/sys/class/typec/port0/preferred_role').write_text('source\\n')"
+TimeoutStartSec=8
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

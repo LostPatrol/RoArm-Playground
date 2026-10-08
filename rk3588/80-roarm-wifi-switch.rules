@@ -1,0 +1,2 @@
+# Replace this adapter's old dispatcher with a port-specific systemd worker.
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0bda", ATTR{idProduct}=="1a2b", RUN="/bin/true", TAG+="systemd", ENV{SYSTEMD_WANTS}+="roarm-wifi-switch@%k.service"
