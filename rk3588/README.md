@@ -5,7 +5,7 @@
 
 总说明：[Playground](../docs/playground/README.md)、[实测状态](../docs/playground/status.md)、[部署复现](../docs/playground/deployment.md)、[待处理事项](../docs/playground/blockers.md)。设备同步文档在 `/opt/roarm-camera/docs/playground/`。
 
-新驱动板应先安装[官方机械臂固件](../docs/baseboard-replacement.md)。2026-10-12新板固件及无舵机USB通信已验证，生产服务恢复；舵机接回后的实际运动待验收。原厂无舵机反馈仍可使界面显示connected，不能据此判断舵机正常。
+新驱动板应先安装[官方机械臂固件](../docs/baseboard-replacement.md)。2026-10-12新板固件及USB通信已验证，生产服务恢复；用户接回舵机后现场观察确认全部舵机可用、网页控制功能正常。原厂无舵机反馈仍可使界面显示connected，不能据此判断舵机正常。
 
 ## 硬件基线
 
