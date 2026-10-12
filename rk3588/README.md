@@ -1,9 +1,11 @@
-<!-- RK3588部署入口：USB串口Playground、视频与无线基线；2026-10-09。 -->
+<!-- RK3588部署入口：USB串口Playground、视频与无线基线；2026-10-12。 -->
 # RK3588 RoArm Playground
 
 统一网页提供18项演示入口、USB视频、实际关节反馈及串口运动控制。打开 `http://<RK3588地址>:8080/`。软件实现与现场验收分开记录；抓取和头戴IMU仍开发中。
 
 总说明：[Playground](../docs/playground/README.md)、[实测状态](../docs/playground/status.md)、[部署复现](../docs/playground/deployment.md)、[待处理事项](../docs/playground/blockers.md)。设备同步文档在 `/opt/roarm-camera/docs/playground/`。
+
+新驱动板应先安装[官方机械臂固件](../docs/baseboard-replacement.md)。2026-10-12新板固件及无舵机USB通信已验证，生产服务恢复；舵机接回后的实际运动待验收。原厂无舵机反馈仍可使界面显示connected，不能据此判断舵机正常。
 
 ## 硬件基线
 

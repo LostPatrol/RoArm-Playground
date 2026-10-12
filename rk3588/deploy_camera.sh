@@ -1,5 +1,5 @@
 #!/bin/bash
-# Deploy serial playground, models and field manuals; preserve a dated backup.
+# Deploy playground, models and hardware/field manuals with a dated backup; 2026-10-12.
 set -eu
 source_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 device_host=${1:-192.168.112.122}
@@ -12,7 +12,8 @@ scp -r "${ssh_options[@]}" "$source_dir/../host" "root@$device_host:/opt/roarm-c
 ssh "${ssh_options[@]}" "root@$device_host" 'mkdir -p /opt/roarm-camera/firmware/esp32_imu'
 scp "${ssh_options[@]}" "$source_dir/../firmware/esp32_imu/README.md" "$source_dir/../firmware/esp32_imu/config.example.h" "$source_dir/../firmware/esp32_imu/esp32_imu.ino" "root@$device_host:/opt/roarm-camera/firmware/esp32_imu/"
 scp -r "${ssh_options[@]}" "$source_dir/../docs/playground" "root@$device_host:/opt/roarm-camera/docs/"
-scp "${ssh_options[@]}" "$source_dir/../docs/wifi-startup.md" "root@$device_host:/opt/roarm-camera/docs/"
+# Keep hardware replacement instructions available on the RK after later deployments.
+scp "${ssh_options[@]}" "$source_dir/../docs/wifi-startup.md" "$source_dir/../docs/baseboard-replacement.md" "$source_dir/../docs/servo-diagnostics.md" "root@$device_host:/opt/roarm-camera/docs/"
 # Model downloads are explicit and checksummed; installation never fetches new versions.
 for model in yolox_nano.onnx haarcascade_frontalface_default.xml face_detection_yunet_2023mar.onnx; do
     if [[ -f "$source_dir/../models/$model" ]]; then
