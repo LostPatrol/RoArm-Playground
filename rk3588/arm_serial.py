@@ -120,10 +120,19 @@ class ArmController:
     def read(self):
         try:
             raw = self.transport.command({'T': 105}, feedback=True)
+            # The repaired arm's shoulder servo is mounted backwards; expose physical angles.
+            shoulder = -raw['s']
+            upper = math.pi / 2 - shoulder - SHOULDER_OFFSET
+            forearm = math.pi / 2 - shoulder - raw['e']
+            radius = LINK2 * math.cos(upper) + LINK3 * math.cos(forearm)
+            # Firmware XYZ assumes the original mount; derive actual XYZ from encoders.
+            raw = dict(raw, x=radius * math.cos(raw['b']), y=radius * math.sin(raw['b']),
+                       z=LINK2 * math.sin(upper) + LINK3 * math.sin(forearm))
             with self.lock:
                 self.state.update(connected=True, raw=raw, updated=time.time(), error='',
                                   device=self.transport.device,
-                                  joints={name: round(math.degrees(raw[key]), 3)
+                                  joints={name: round(math.degrees(raw[key]) *
+                                          (-1 if name == 'shoulder' else 1), 3)
                                           for name, key in zip(JOINTS, FEEDBACK_KEYS)})
             return self.snapshot()
         except Exception as exc:
@@ -166,8 +175,10 @@ class ArmController:
         low, high = LIMITS[joint]
         if not math.isfinite(angle) or not low <= angle <= high:
             raise ValueError('%s 角度须在 %s..%s 度内' % (joint, low, high))
+        # Compensate the repaired arm's reversed shoulder mount; other axes keep their sign.
+        servo_angle = -angle if joint == 'shoulder' else angle
         self.transport.command({'T': 101, 'joint': JOINTS.index(joint) + 1,
-                                'rad': math.radians(angle), 'spd': speed, 'acc': acceleration})
+                                'rad': math.radians(servo_angle), 'spd': speed, 'acc': acceleration})
         if speed or acceleration:
             self.direct_speed_ready = False
         with self.lock:
@@ -183,10 +194,11 @@ class ArmController:
             if name not in LIMITS or not math.isfinite(float(angle)) or not LIMITS[name][0] <= float(angle) <= LIMITS[name][1]:
                 raise ValueError('姿态关节或角度超出范围')
         if simultaneous:
+            # Negate only the shoulder because its servo is mounted backwards.
             # Follow both camera axes with one native SyncWrite; hold other measured axes.
             goal = dict(self.measured()['joints'], **joints)
             self.transport.command(dict(T=102, base=math.radians(goal['base']),
-                shoulder=math.radians(goal['shoulder']), elbow=math.radians(goal['elbow']),
+                shoulder=-math.radians(goal['shoulder']), elbow=math.radians(goal['elbow']),
                 hand=math.radians(goal['gripper']), spd=0, acc=0))
             self.direct_speed_ready = True
             with self.lock:
@@ -224,7 +236,7 @@ class ArmController:
         return bool(enabled)
 
     def cartesian(self, x, y, z, t=None, speed=1, direct=False):
-        """Factory IK moves XYZ in mm, preserving the measured clamp angle by default."""
+        """Solve factory IK locally and compensate the reversed shoulder mount."""
         x, y, z, speed = (float(value) for value in (x, y, z, speed))
         if not all(math.isfinite(value) for value in (x, y, z, speed)) or not 0 < speed <= 1:
             raise ValueError('XYZ 须为有效毫米数，坐标速度须在 0..1 内')
@@ -248,17 +260,15 @@ class ArmController:
             raise ValueError('夹爪 t 须在 45..180 度对应的弧度范围内')
         if type(direct) is not bool:
             raise ValueError('direct 须为布尔值')
-        if direct:
-            if not self.direct_speed_ready:
-                # Initialize inherited speed arrays once after stop/raw/slow commands.
-                raw = self.measured()['raw']
-                self.transport.command(dict(T=102, base=raw['b'], shoulder=raw['s'],
-                                             elbow=raw['e'], hand=raw['t'], spd=0, acc=0))
-                self.direct_speed_ready = True
-            self.transport.command(dict(T=1041, x=x, y=y, z=z, t=t))
-        else:
-            self.transport.command(dict(T=104, x=x, y=y, z=z, t=t, spd=speed))
         target['gripper'] = math.degrees(t)
+        # Firmware IK assumes the original shoulder mount. Use the same IK above,
+        # then negate only the reversed shoulder in one synchronous joint command.
+        # Direct dragging stays at maximum speed; coordinate speed scales servo steps/s.
+        joint_speed = 0 if direct or speed == 1 else max(1, round(1000 * speed))
+        self.transport.command(dict(T=102, base=math.radians(target['base']),
+            shoulder=-math.radians(target['shoulder']), elbow=math.radians(target['elbow']),
+            hand=t, spd=joint_speed, acc=0))
+        self.direct_speed_ready = not bool(joint_speed)
         with self.lock:
             self.state['targets'].update(target)
             self.state['cartesian_target'] = dict(x=x, y=y, z=z, t=t)

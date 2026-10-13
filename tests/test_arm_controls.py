@@ -27,6 +27,19 @@ class FactoryControls(unittest.TestCase):
         self.transport = RecordingTransport()
         self.arm = ArmController(self.transport, poll=False)
 
+    def test_reversed_shoulder_feedback_targets_and_stop(self):
+        """Only the repaired shoulder reverses; stop holds native encoder angles."""
+        self.transport.feedback['s'] = math.radians(20)
+        state = self.arm.read()
+        self.assertEqual(state['joints']['shoulder'], -20)
+        self.arm.move('shoulder', delta=5)
+        self.assertAlmostEqual(self.transport.commands[-1]['rad'], math.radians(15))
+        self.arm.pose(dict(shoulder=30, elbow=100), simultaneous=True)
+        self.assertAlmostEqual(self.transport.commands[-1]['shoulder'], math.radians(-30))
+        self.assertAlmostEqual(self.transport.commands[-1]['elbow'], math.radians(100))
+        self.arm.stop()
+        self.assertAlmostEqual(self.transport.commands[-1]['shoulder'], math.radians(20))
+
     def test_factory_init_and_switches(self):
         self.arm.home()
         self.assertEqual(self.transport.commands[-1], dict(T=102, base=0, shoulder=0,
@@ -40,12 +53,15 @@ class FactoryControls(unittest.TestCase):
 
     def test_absolute_and_relative_coordinates_preserve_measured_clamp(self):
         goal = self.arm.cartesian(310, 10, 235, speed=.5)
-        self.assertEqual(self.transport.commands[-1], dict(T=104, **goal))
+        self.assertEqual(self.transport.commands[-1]['T'], 102)
+        self.assertEqual(self.transport.commands[-1]['spd'], 500)
+        self.assertAlmostEqual(self.transport.commands[-1]['shoulder'],
+                               -math.radians(self.arm.snapshot()['targets']['shoulder']))
         self.assertEqual(goal['t'], math.pi)
         self.assertLess(abs(self.arm.snapshot()['targets']['shoulder']), 1)
         for axis, delta in [('x', 10), ('y', -10), ('z', 10), ('t', -.1)]:
             goal = self.arm.cartesian_delta(axis, delta)
-            self.assertAlmostEqual(goal[axis], self.transport.feedback[axis] + delta)
+            self.assertAlmostEqual(goal[axis], self.arm.read()['raw'][axis] + delta)
         self.transport.feedback['t'] = math.pi + .001
         self.arm.read()
         self.assertEqual(self.arm.cartesian(310, 0, 235)['t'], math.pi)
@@ -87,12 +103,11 @@ class FactoryControls(unittest.TestCase):
         self.transport.commands.clear()
         first = self.arm.cartesian(310, 0, 235, t=math.pi, direct=True)
         self.arm.cartesian(310, 5, 240, t=math.pi, direct=True)
-        self.assertEqual([command['T'] for command in self.transport.commands], [102, 1041, 1041])
-        self.assertEqual(self.transport.commands[0], dict(T=102, base=0, shoulder=0,
-            elbow=math.pi / 2, hand=math.pi, spd=0, acc=0))
-        self.assertEqual(self.transport.commands[1], dict(T=1041, x=310., y=0., z=235., t=math.pi))
+        self.assertEqual([command['T'] for command in self.transport.commands], [102, 102])
+        self.assertEqual(self.transport.commands[0]['spd'], 0)
+        self.assertEqual(self.transport.commands[0]['hand'], math.pi)
         self.assertTrue(first['direct'])
-        self.assertNotIn('spd', self.transport.commands[-1])
+        self.assertEqual(self.transport.commands[-1]['spd'], 0)
         self.assertEqual(self.arm.snapshot()['joints']['elbow'], 90)
 
     def test_direct_speed_is_reinitialized_after_stop_raw_or_slow_motion(self):
@@ -104,7 +119,7 @@ class FactoryControls(unittest.TestCase):
             interrupt()
             self.transport.commands.clear()
             self.arm.cartesian(310, 0, 235, t=math.pi, direct=True)
-            self.assertEqual([command['T'] for command in self.transport.commands], [102, 1041])
+            self.assertEqual([command['T'] for command in self.transport.commands], [102])
 
     def test_measured_cache_only_reuses_recent_connected_feedback(self):
         self.arm.read()
@@ -136,7 +151,7 @@ class FactoryControls(unittest.TestCase):
     def test_raw_preserves_unicode_and_returns_true_feedback(self):
         result = self.arm.raw('{"T":202,"name":"a&b#c+d 空格.txt"}')
         self.assertEqual(result['sent']['name'], 'a&b#c+d 空格.txt')
-        self.assertEqual(self.arm.raw('{"T":105}'), self.transport.feedback)
+        self.assertEqual(self.arm.raw('{"T":105}')['s'], self.transport.feedback['s'])
         for command in ('{"T":600}', '{"T":601}', '{"T":603}', '{"T":604}',
                         '{"T":true}', '{"T":114,"led":NaN}', '[]'):
             before = len(self.transport.commands)
