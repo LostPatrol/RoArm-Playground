@@ -71,7 +71,7 @@ RoArm-Playground 是一个基于 **RoArm-M2 机械臂与 RK3588** 的互动实�
 
 - [实验操作与 18 项验收手册](docs/playground/README.md)
 - [机械臂控制说明](docs/playground/controls.md) · [摄像头配置](docs/playground/camera.md)
-- [部署指南](docs/playground/deployment.md) · [RK3588 环境说明](rk3588/README.md)
+- [部署指南](docs/playground/deployment.md) · [Windows 演示笔记本](docs/playground/windows.md) · [RK3588 环境说明](rk3588/README.md)
 - [手势、语音与本地模型](docs/playground/host.md) · [视觉模块](docs/playground/vision.md)
 - [本机开发与测试](docs/development.md) · [待完成事项](docs/playground/blockers.md)
 

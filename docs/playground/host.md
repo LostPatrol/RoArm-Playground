@@ -1,7 +1,7 @@
 <!-- 上位机模型管理服务、板端语音口令词表与真实CPU导演的安装及验收边界；2026-10-09。 -->
 # 手势、语音、拍手与本地导演
 
-默认支持另一台Ubuntu 24.04 / Python 3.12笔记本。手势在上位机读取RK3588 `/snapshot.jpg`；中文语音和拍手默认由网页自动启动板端worker，读取UQ212麦克风，无需再开终端重复启动。停止或切换到其他模式会结束旧音频worker及arecord；切到另一音频模式时由新worker接管麦克风。
+上位机支持Ubuntu 24.04或原生Windows / Python 3.12；Windows安装、启动和维护见[Windows演示笔记本](windows.md)。手势在上位机读取RK3588 `/snapshot.jpg`；中文语音和拍手默认由网页自动启动板端worker，读取UQ212麦克风，无需再开终端重复启动。停止或切换到其他模式会结束旧音频worker及arecord；切到另一音频模式时由新worker接管麦克风。
 
 这些功能共享 Playground 的 `/api/state`、`/api/perception`、`/api/action`。同一时刻只让前端选中的模式产生动作。`--dry-run` 完全不发 POST，也不读取模式；可用本地图片/WAV验真实模型。
 
@@ -140,7 +140,7 @@ bash host/run_director.sh cpu
 .venv/bin/python -m host.director '先亮灯，再向左转十度，等待一秒，然后打招呼'
 ```
 
-构建固定 llama.cpp `b4514` / `ec7f3ac9ab33e46b136eb5ab6a76c4d81f57c7f1`。源码/构建过程放在 `agent/codex/llama.cpp-b4514`；CPU构建关闭 `GGML_NATIVE`，可在另一台x86笔记本重建，默认6线程、4096上下文（`DIRECTOR_CONTEXT`可覆盖）。约1.12GB量化模型给16GB内存笔记本保留空间；实际4060笔记本性能尚未测试。
+Ubuntu构建固定 llama.cpp `b4514` / `ec7f3ac9ab33e46b136eb5ab6a76c4d81f57c7f1`。源码/构建过程放在 `agent/codex/llama.cpp-b4514`；CPU构建关闭 `GGML_NATIVE`，可在另一台x86笔记本重建，默认6线程、4096上下文（`DIRECTOR_CONTEXT`可覆盖）。约1.12GB量化模型适合16GB内存笔记本；原生Windows使用同版本官方二进制，RTX4060真实推理已验证，部署见[Windows说明](windows.md)。
 
 可选GPU方案需要目标机器已有兼容NVIDIA驱动和支持Ada架构的CUDA编译器（CUDA 11.8或更新）：
 
@@ -149,7 +149,7 @@ bash host/build_director.sh cuda
 bash host/run_director.sh cuda
 ```
 
-构建同时指定 `86;89`，对应RTX3080与RTX4060；不依赖本机特定Python Torch/CUDA轮子。本轮实测CPU，GPU构建与目标笔记本尚未验收。`LLAMA_SERVER`、`LLAMA_SOURCE_DIR`、`DIRECTOR_MODEL_FILE` 可覆盖路径，`DIRECTOR_THREADS` 可调整线程。
+Ubuntu构建同时指定 `86;89`，对应RTX3080与RTX4060；不依赖本机特定Python Torch/CUDA轮子。Ubuntu实测CPU，CUDA源码构建路径未验收；Windows官方CUDA12.4程序已在RTX4060完成真实预览回归，无需CUDA编译器。`LLAMA_SERVER`、`LLAMA_SOURCE_DIR`、`DIRECTOR_MODEL_FILE` 可覆盖路径，`DIRECTOR_THREADS` 可调整线程。
 
 默认服务只监听 `127.0.0.1:8081`。RK3588调用笔记本服务时显式使用局域网监听：
 

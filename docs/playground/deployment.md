@@ -1,7 +1,7 @@
-<!-- Ubuntu24笔记本与RK3588部署复现；2026-10-09。 -->
+<!-- Ubuntu/native Windows host and RK3588 deployment. -->
 # 部署与复现
 
-优先演示操作系统Ubuntu24.04/Python3.12；RK3588保持Ubuntu20.04/Python3.8/OpenCV4.8，无需升级系统或NPU运行时。
+上位机支持Ubuntu24.04或原生Windows/Python3.12；Windows演示笔记本安装见[windows.md](windows.md)。RK3588保持Ubuntu20.04/Python3.8/OpenCV4.8，无需升级系统或NPU运行时。
 
 ## 接线与协议
 
@@ -9,7 +9,7 @@ USB摄像头/网卡→USB-A Hub→RK3588，RK独立供电；Type-C→机械臂US
 
 启动只读T105，不写初始化/重置/力矩。网页角度为度；T101为rad、速度为整数steps/s，T102用base/shoulder/elbow/hand完整字段。控制经RK串口，旧ESP32无线命令入口不使用。
 
-## 演示笔记本
+## Ubuntu上位机
 
 模型与依赖详细版本见[host.md](host.md)。工程根目录首次安装：
 
@@ -36,7 +36,7 @@ DIRECTOR_HOST=0.0.0.0 bash host/run_director.sh cpu
 
 也可安装 `bash host/install_host_service.sh http://RK-IP:8080`，用户登录后自动启动8082管理服务和导演，由网页手势/猜拳/导演的“尝试连接/加载”入口加载模型。管理服务监督手势worker退出恢复；默认不自动激活机械臂模式。管理服务本身重启后需重新点击手势加载。系统尚未登录时启动未验收，不能视为独立板端自启动的一部分。详见[host.md](host.md)。
 
-CPU构建固定llama.cpp提交、关闭GGML_NATIVE，已实际构建/推理。CUDA选项包含86/89架构，但4060/CUDA未实测；CPU路径可保留，速度需在演示笔记本重新测。
+CPU构建固定llama.cpp提交、关闭GGML_NATIVE，已实际构建/推理。Ubuntu CUDA构建选项包含86/89架构，该源码构建路径未实测；原生Windows的官方b4514 CUDA12.4程序已在RTX4060运行真实模型，两条构建/运行路径的证据分别记录。
 
 将`rk3588/roarm-director.conf.example`复制到设备`/etc/systemd/system/roarm-camera.service.d/director.conf`，替换LAPTOP-IP，再`systemctl daemon-reload && systemctl restart roarm-camera`。地址变更只改配置；模型输出先预览，点击执行才运动。
 

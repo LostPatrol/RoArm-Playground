@@ -179,7 +179,7 @@ def plan(text, url="http://127.0.0.1:8081/v1", model="roarm-director"):
                            (error.code, error.read(1000).decode(errors="replace"))) from error
     except URLError as error:
         raise RuntimeError("导演模型服务不可达（%s）：%s；请尝试连接/加载本机模型，"
-                           "或在上位机工程运行 bash host/install_host_service.sh" %
+                           "启动方式见 docs/playground/windows.md（Windows）或 host.md（Ubuntu）" %
                            (url, error.reason)) from error
     content = result["choices"][0]["message"]["content"]
     if not isinstance(content, str):

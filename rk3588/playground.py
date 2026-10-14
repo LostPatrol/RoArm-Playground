@@ -609,9 +609,8 @@ class Playground:
                 except (ValueError, UnicodeError):
                     raise RuntimeError('上位机管理服务返回 HTTP %s' % exc.code)
             except OSError as exc:
-                raise RuntimeError('无法连接上位机8082管理服务。请在上位机项目目录运行 '
-                                   '.venv/bin/python -m host.manager --host 0.0.0.0；'
-                                   '依赖和模型安装见 /manuals/host.md。原因：%s' % exc)
+                raise RuntimeError('无法连接上位机8082管理服务。Windows启动见 /manuals/windows.md；'
+                                   'Ubuntu启动、依赖和模型安装见 /manuals/host.md。原因：%s' % exc)
             if worker == 'director':
                 self.director_url = 'http://%s:%s/v1' % (parsed.hostname, result.get('director_port', 8081))
             self.event('已连接上位机服务：' + worker)

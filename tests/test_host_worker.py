@@ -143,6 +143,7 @@ class InteractionsTest(unittest.TestCase):
                 launch.assert_not_called()
 
     def test_manager_tracks_actual_model_readiness_and_keeps_one_process(self):
+        """Read actual readiness while isolating all native process operations."""
         root = Path(__file__).resolve().parent.parent
         with tempfile.TemporaryDirectory(dir=str(root / "agent/codex")) as directory:
             manager = Manager(self.url, directory)
@@ -150,6 +151,7 @@ class InteractionsTest(unittest.TestCase):
             process.poll.return_value = None
             with patch.object(manager, "requirements", return_value={"model_exists": True, "missing_dependencies": []}), \
                  patch.object(manager, "director_ready", return_value=False), \
+                 patch("host.manager.subprocess.run"), \
                  patch("host.manager.subprocess.Popen", return_value=process) as launch:
                 result = manager.start("gestures", self.url)
                 self.assertEqual(result["workers"]["gestures"]["status"], "loading")
@@ -161,6 +163,7 @@ class InteractionsTest(unittest.TestCase):
                 process.terminate.assert_called_once()
 
     def test_manager_restarts_failed_worker_with_the_same_rk_endpoint(self):
+        """Keep process-tree cleanup mocked on both supported host platforms."""
         root = Path(__file__).resolve().parent.parent
         with tempfile.TemporaryDirectory(dir=str(root / "agent/codex")) as directory:
             manager = Manager(self.url, directory)
@@ -175,6 +178,7 @@ class InteractionsTest(unittest.TestCase):
             with patch.object(manager, "requirements", return_value={"model_exists": True, "missing_dependencies": []}), \
                  patch.object(manager, "director_ready", return_value=False), \
                  patch("host.manager.time.monotonic", return_value=10), \
+                 patch("host.manager.subprocess.run"), \
                  patch("host.manager.subprocess.Popen", return_value=new) as launch:
                 manager.supervise(stop)
                 self.assertIs(manager.processes["gestures"], new)

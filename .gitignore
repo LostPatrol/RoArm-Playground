@@ -16,6 +16,11 @@ __pycache__/
 /rk3588/rtl8822cu-5.10.198.tar.gz
 # Downloaded models and runtime recordings are installed by documented scripts.
 /models/
+# Native Windows runtimes, caches and logs are downloaded/generated locally.
+/tools/
+/data/
+/temp/
+/cache/
 /rk3588/models/
 /rk3588/playground-data/
 # ESP32 reference firmware uses a local-only Wi-Fi configuration.

@@ -12,12 +12,55 @@ import time
 from urllib.parse import urlsplit
 from urllib.request import ProxyHandler, build_opener
 
+# Resolve project resources independently of the launch directory.
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def director_binary():
+    """Locate the selected native server, preserving existing Linux overrides."""
+    if os.name == "nt":
+        backend = os.environ.get("ROARM_DIRECTOR_BACKEND", "cpu")
+        if backend not in ("cpu", "cuda"):
+            raise ValueError("ROARM_DIRECTOR_BACKEND must be cpu or cuda")
+        default = ROOT / "tools" / "llama-b4514" / backend / "llama-server.exe"
+    else:
+        source = Path(os.environ.get("LLAMA_SOURCE_DIR", str(ROOT / "agent/codex/llama.cpp-b4514")))
+        default = source / "build-cpu/bin/llama-server"
+    return Path(os.environ.get("LLAMA_SERVER", str(default)))
+
+
+def director_command(port):
+    """Launch Windows directly so the manager owns the actual model process."""
+    if os.name != "nt":
+        return ["bash", str(ROOT / "host/run_director.sh"), "cpu"]
+    return [str(director_binary()), "-m",
+            os.environ.get("DIRECTOR_MODEL_FILE", str(ROOT / "models/qwen2.5-1.5b-instruct-q4_k_m.gguf")),
+            "--alias", "roarm-director", "--host", "0.0.0.0", "--port", str(port),
+            "-c", os.environ.get("DIRECTOR_CONTEXT", "4096"),
+            "-t", os.environ.get("DIRECTOR_THREADS", "6"),
+            "-ngl", "99" if os.environ.get("ROARM_DIRECTOR_BACKEND", "cpu") == "cuda" else "0"]
+
+
+def stop_process(process):
+    """Stop owned worker trees, including Windows venv redirector children."""
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if process.poll() is None:
+        process.terminate()
+    try:
+        process.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
 
 
 class Manager:
     """Own model processes; restarts keep a transient RK outage from disabling gestures."""
     def __init__(self, server, log_dir, director_port=8081):
+        """Track owned workers and preserve the current RK endpoint."""
         self.server = server.rstrip("/")
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -32,12 +75,15 @@ class Manager:
             missing = [name for name in ("mediapipe", "cv2", "numpy")
                        if importlib.util.find_spec(name) is None]
             setup = ".venv/bin/python -m pip install -r host/requirements.txt; bash scripts/fetch_interaction_models.sh gestures"
+            if os.name == "nt":
+                setup = "powershell -ExecutionPolicy Bypass -File host/install_windows.ps1"
         elif worker == "director":
             model = Path(os.environ.get("DIRECTOR_MODEL_FILE", str(ROOT / "models/qwen2.5-1.5b-instruct-q4_k_m.gguf")))
-            source = Path(os.environ.get("LLAMA_SOURCE_DIR", str(ROOT / "agent/codex/llama.cpp-b4514")))
-            binary = Path(os.environ.get("LLAMA_SERVER", str(source / "build-cpu/bin/llama-server")))
+            binary = director_binary()
             missing = [] if binary.is_file() else [str(binary)]
             setup = "bash scripts/fetch_interaction_models.sh llm; bash host/build_director.sh cpu"
+            if os.name == "nt":
+                setup = "powershell -ExecutionPolicy Bypass -File host/install_windows.ps1"
         else:
             raise ValueError("worker must be gestures or director")
         return {"model": str(model), "model_exists": model.is_file(),
@@ -53,6 +99,7 @@ class Manager:
             return False
 
     def status(self):
+        """Return dependency details and real worker readiness."""
         with self.lock:
             workers = {}
             for worker in ("gestures", "director"):
@@ -80,8 +127,7 @@ class Manager:
                 if worker == "gestures" and server.rstrip("/") != self.server:
                     old = self.processes.get(worker)
                     if old and old.poll() is None:
-                        old.terminate()
-                        old.wait(timeout=3)
+                        stop_process(old)
                     self.server = server.rstrip("/")
             if worker == "director" and self.director_ready():
                 return self.status()
@@ -95,7 +141,7 @@ class Manager:
             log_path = self.log_dir / ("%s-%s.log" % (worker, time.time_ns()))
             command = ([sys.executable, "-m", "host.worker", "--server", self.server,
                         "--mode", "gestures"] if worker == "gestures" else
-                       ["bash", str(ROOT / "host/run_director.sh"), "cpu"])
+                       director_command(self.director_port))
             environment = dict(os.environ, DIRECTOR_HOST="0.0.0.0",
                                DIRECTOR_PORT=str(self.director_port), PYTHONUNBUFFERED="1")
             with log_path.open("ab") as log:
@@ -122,18 +168,14 @@ class Manager:
             self.desired.clear()
             for process in self.processes.values():
                 if process.poll() is None:
-                    process.terminate()
-                    try:
-                        process.wait(timeout=3)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-                        process.wait()
+                    stop_process(process)
 
 
 def handler_for(manager):
     """Small LAN API consumed through the RK backend, avoiding browser localhost restrictions."""
     class Handler(BaseHTTPRequestHandler):
         def reply(self, code, payload):
+            """Send a UTF-8 JSON API response."""
             body = json.dumps(payload, ensure_ascii=False).encode()
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -142,11 +184,13 @@ def handler_for(manager):
             self.wfile.write(body)
 
         def do_GET(self):
+            """Expose the manager status without starting workers."""
             if self.path != "/api/status":
                 return self.reply(404, {"error": "unknown endpoint"})
             self.reply(200, manager.status())
 
         def do_POST(self):
+            """Load a requested worker without activating an arm mode."""
             if self.path != "/api/start":
                 return self.reply(404, {"error": "unknown endpoint"})
             try:
@@ -163,6 +207,7 @@ def handler_for(manager):
 
 
 def main():
+    """Serve and supervise native model workers until shutdown."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8082)
@@ -171,6 +216,10 @@ def main():
     parser.add_argument("--log-dir", default=str(ROOT / "agent/codex/host-manager"))
     parser.add_argument("--start-director", action="store_true")
     args = parser.parse_args()
+    if os.name == "nt":
+        from host.windows_job import contain_workers
+        # Windows closes the job on manager exit, including a forced termination.
+        contain_workers()
     manager = Manager(args.server, args.log_dir, args.director_port)
     stop = threading.Event()
     server = ThreadingHTTPServer((args.host, args.port), handler_for(manager))
