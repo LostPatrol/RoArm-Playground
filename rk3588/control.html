@@ -39,17 +39,17 @@
         <details class="manual-panel coordinate-panel" open><summary>坐标控制</summary><div class="cartesian-fields"><label>X mm<input id="coord-x" type="number" step="1" value="310"></label><label>Y mm<input id="coord-y" type="number" step="1" value="0"></label><label>Z mm<input id="coord-z" type="number" step="1" value="235"></label><label>夹爪 t °<input id="coord-t" type="number" min="45" max="180" value="180"></label></div><div class="field-row"><button id="coord-read">填入实测坐标</button><button id="coord-send">XYZ 绝对到位</button></div><div class="field-row"><label>步长 mm <input id="coord-step" class="short" type="number" min="1" value="10"></label><label>坐标按钮速度 <input id="coord-speed" class="short" type="number" min="0.01" max="1" step="0.05" value="1"></label></div><div class="coordinate-jog" id="coordinate-jog"></div><div class="field-row"><button id="horizontal-drag">水平拖动</button><button id="vertical-drag">垂直拖动</button></div><p class="subtle">速度仅用于坐标到位与步进按钮；模型拖拽连续跟随目标。</p></details>
         <div class="factory-tools">
           <details class="manual-panel" open><summary>原厂力矩控制</summary><div class="field-row"><span>Torque</span><button id="torque-off">OFF</button><button id="torque-on">ON</button><span>自适应力矩 DEFA</span><button id="adaptive-off">OFF</button><button id="adaptive-on">ON</button></div><p class="subtle">Torque OFF 松开舵机，支持手动示教；请托住机械臂再关闭。</p></details>
-          <details class="manual-panel"><summary>原始字符串命令</summary><textarea id="raw-command" class="raw-command" aria-label="原厂 JSON 字符串命令">{"T":105}</textarea><div class="field-row"><button id="raw-send">发送字符串命令</button></div><pre id="raw-result" class="code-preview" hidden></pre><details class="command-help"><summary>展开原厂命令列表</summary><div id="command-help"></div><p class="subtle">可手工发送原厂 JSON；保留既有 BOOT / Flash / NVS 重置屏蔽。</p></details></details>
+          <details class="manual-panel"><summary>原始字符串命令</summary><textarea id="raw-command" class="raw-command" aria-label="原厂 JSON 字符串命令">{"T":105}</textarea><div class="field-row"><button id="raw-send">发送字符串命令</button></div><pre id="raw-result" class="code-preview" hidden></pre><details class="command-help"><summary>展开原厂命令列表</summary><div id="command-help"></div><p class="subtle">可手工发送原厂 JSON 控制命令。</p></details></details>
         </div>
       </div>
       <div class="activity"><div class="panel-heading"><h3>正在发生什么</h3><span id="mode-state">模式：—</span></div><div id="activity-feed" aria-live="polite"><p class="subtle">等待设备事件…</p></div><p id="action-message" role="status"></p></div>
     </section>
     <section class="catalog" aria-label="18 个互动项目">
-      <div class="catalog-heading"><div><div class="eyebrow">CHOOSE YOUR EXPERIMENT</div><h2>从好奇，开始下一步。</h2></div><p>从简单到复杂 · 每个项目都有独立验收手册</p></div>
+      <div class="catalog-heading"><div><div class="eyebrow">CHOOSE YOUR EXPERIMENT</div><h2>从好奇，开始下一步。</h2></div><p>从感知到创作 · 选择一个项目，探索机器人互动</p></div>
       <div class="catalog-toolbar"><div id="filters" role="group" aria-label="项目分类"><button class="active" data-filter="all">全部 18</button><button data-filter="basic">感知与控制</button><button data-filter="creative">创作与编程</button><button data-filter="advanced">进阶探索</button></div><label class="search-box"><span>⌕</span><input id="search" type="search" placeholder="寻找一个实验" aria-label="搜索实验"></label></div>
       <div class="project-grid" id="project-grid"></div><p id="no-results" hidden>没有找到匹配项目。</p>
     </section>
-    <footer><span>RoArm-M2 · 实体机器人实验室</span><span>识别、连接与运行结果均来自设备反馈</span><a href="/manuals/README.md" target="_blank" rel="noopener">操作与验收手册 ↗</a></footer>
+    <footer><span>RoArm-M2 · 实体机器人实验室</span><span>识别、连接与运行结果均来自设备反馈</span><a href="/manuals/README.md" target="_blank" rel="noopener">使用指南 ↗</a></footer>
   </main>
 </body>
 </html>

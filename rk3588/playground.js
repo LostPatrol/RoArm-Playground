@@ -130,14 +130,14 @@ globalThis.RoArmModel = {
   function capabilityText(id) {
     const info = state.demo_status?.[id];
     const value = state.capabilities?.[id==='panorama'?'stitch':id];
-    if(['gesture','rps'].includes(id)&&!state.capabilities?.host_worker)return info?.message || '需启动手势 worker';
-    if(['voice','clap'].includes(id)&&(value===undefined||value===false||value?.available===false))return value?.reason || value?.error || info?.message || '需启动音频 worker';
+    if(['gesture','rps'].includes(id)&&!state.capabilities?.host_worker)return info?.message || '请连接并加载手势模型';
+    if(['voice','clap'].includes(id)&&(value===undefined||value===false||value?.available===false))return value?.reason || value?.error || info?.message || '启动实验后开启音频采集';
     if (typeof value === 'string') return value;
     if (value === false || value?.available === false) return value?.reason || value?.error || '依赖或硬件待准备';
-    if(id==='foam')return '正在开发 · 黑块检测可测试';
+    if(id==='foam')return '开发中 · 可体验黑块检测';
     if(id==='imu')return '硬件待接入 · 支持模拟输入';
     if (typeof info === 'string') return info;
-    if (value === true || value?.available) return (value?.backend?value.backend+' · ':'')+(info?.message||'能力已就绪 · 待现场验收');
+    if (value === true || value?.available) return info?.message || '已就绪，可以开始体验';
     if (info?.message) return info.message;
     if (info?.status) return info.status;
     return '等待设备能力检查';
@@ -184,7 +184,7 @@ globalThis.RoArmModel = {
       $('model-sync').checked=next.id==='digital';drawOverlay();
       lastProgramNames = '';
       renderPanel(next.id);
-      const help = node('a','↗ 查看本项目的操作与验收手册','inline-link');
+      const help = node('a','↗ 查看本项目的使用指南','inline-link');
       help.href = `/manuals/acceptance/${String(next.index).padStart(2,'0')}-${next.id}.md`;
       help.target = '_blank'; help.rel = 'noopener';
       const helpRow = node('div',undefined,'field-row'); helpRow.append(help);
@@ -201,21 +201,21 @@ globalThis.RoArmModel = {
       buttons('face','多人同屏可显示全部人脸，机械臂保持跟随一位观众。持续未检出会先将摄像头朝向复位，再水平左右往返寻找；只识别模式不运动。',`<div class="field-row"><label for="face-behavior">行为</label><select id="face-behavior"><option value="greet">寻找并致意</option><option value="follow">跟随观众</option><option value="detect">只识别</option></select></div>`);
       bind('start-mode', button => startMode('face',{motion:$('face-behavior').value!=='detect',greet:$('face-behavior').value==='greet'},button));
     } else if (id === 'color') {
-      buttons('color','用鲜艳、颜色一致的卡片测试；背景尽量不要出现同色物品。',`<div class="field-row"><label for="target-color">目标颜色</label><select id="target-color"><option value="red">红色</option><option value="green">绿色</option><option value="blue">蓝色</option><option value="yellow">黄色</option></select><select id="color-motion" aria-label="颜色跟随选项"><option value="follow">水平跟随</option><option value="detect">只识别</option></select></div>`);
+      buttons('color','用鲜艳、颜色一致的卡片互动；背景尽量不要出现同色物品。',`<div class="field-row"><label for="target-color">目标颜色</label><select id="target-color"><option value="red">红色</option><option value="green">绿色</option><option value="blue">蓝色</option><option value="yellow">黄色</option></select><select id="color-motion" aria-label="颜色跟随选项"><option value="follow">水平跟随</option><option value="detect">只识别</option></select></div>`);
       bind('start-mode', button => startMode('color',{color:$('target-color').value,motion:$('color-motion').value === 'follow'},button));
     } else if (['gesture','objects','markers','clap'].includes(id)) {
-      const descriptions = {gesture:'连接上位机并加载手部模型后，将完整手掌放在画面中；识别状态由设备返回。',objects:'先确保物品模型已安装，使用模型支持的演示类别；置信度是模型输出。',markers:'使用 AprilTag tag36h11 标记，将其正面朝向摄像头；识别后显示编号与边框。',clap:'先确保音频设备可用。拍一次手，观察声音事件与动作回应。'};
+      const descriptions = {gesture:'连接上位机并加载手部模型后，将完整手掌放在画面中；识别状态由设备返回。',objects:'把杯子、瓶子等常见物品放在镜头前，观察识别结果。',markers:'使用 AprilTag tag36h11 标记，将其正面朝向摄像头；识别后显示编号与边框。',clap:'先确保音频设备可用。拍一次手，观察声音事件与动作回应。'};
       buttons(id,descriptions[id]);
       if(id==='gesture')hostConnectPanel('gestures');
       if (id === 'clap') {
-        const row = node('div',undefined,'field-row'); const test = node('button','发送一次明确的拍手测试事件');
+        const row = node('div',undefined,'field-row'); const test = node('button','点击模拟一次拍手');
         test.onclick = () => action('clap',{},test); row.append(test); $('experiment-panel').append(row);
       }
     } else if (id === 'voice') {
-      buttons('voice','连接麦克风并安装离线中文模型后，可采集真实口令；文字入口用于独立验证口令到动作。',`<div class="field-row"><input class="grow" id="speech-text" value="找人" aria-label="语音文字测试口令"><button id="speech-send">执行文字口令</button></div>`);
+      buttons('voice','启动实验后，对着麦克风说出短口令；也可以在下方输入文字，体验口令控制。',`<div class="field-row"><input class="grow" id="speech-text" value="找人" aria-label="文字口令"><button id="speech-send">执行文字口令</button></div>`);
       bind('speech-send',button => action('speech',{text:$('speech-text').value},button));
     } else if (id === 'rps') {
-      buttons('rps','摄像头猜拳需要手部模型。下面的按钮是手动注入的调试输入，可独立测试胜负规则。',`<div class="field-row"><span class="tag">手动注入 / 调试</span><button id="rps-rock">✊ 石头</button><button id="rps-paper">✋ 布</button><button id="rps-scissors">✌ 剪刀</button></div>`);
+      buttons('rps','加载手势模型后，对着摄像头出拳；也可以点击下方按钮，选择你的出拳。',`<div class="field-row"><span class="tag">点击出拳</span><button id="rps-rock">✊ 石头</button><button id="rps-paper">✋ 布</button><button id="rps-scissors">✌ 剪刀</button></div>`);
       hostConnectPanel('gestures');
       for (const [name,gesture] of Object.entries({rock:'fist',paper:'open',scissors:'victory'})) bind(`rps-${name}`,button => action('gesture',{gesture},button));
     } else if (id === 'teach') {
@@ -247,9 +247,9 @@ globalThis.RoArmModel = {
       bind('director-plan',async button => { directorSteps=[]; $('director-execute').disabled=true; const result=await action('director',{text:$('director-text').value},button); directorSteps=result?.steps || []; $('director-preview').textContent=result ? JSON.stringify(result,null,2) : '生成失败，请查看运行信息'; $('director-execute').disabled=!directorSteps.length; });
       bind('director-execute',button => action('director_run',{steps:directorSteps},button));
     } else if (id === 'agent') {
-      panel('<h3>现场改规则挑战</h3><p>请在开发机的 Codex 中提出需求，由 Agent 修改代码、验证并部署。这个入口提供实验线索与验收标准。</p><ol class="checklist"><li>提出一个具体改动：例如“把颜色跟随默认值改成蓝色”。</li><li>让 Agent 找到对应配置或规则，解释将修改的位置。</li><li>检查改动，运行独立测试，再部署到设备。</li><li>用真实卡片、口令或动作验证结果，记录通过或失败。</li></ol><pre class="code-preview">示例需求：\n“让张手手势只亮灯，不移动夹爪。\n请同步修改验收手册并说明实测结果。”</pre><p class="subtle">入口不包含嵌入式 Agent 或云模型调用。</p><div id="panel-status" class="panel-status"></div>');
+      panel('<h3>现场改规则挑战</h3><p>提出一个新规则，让开发机上的 Codex 帮你修改，再观察机器人的新反应。</p><ol class="checklist"><li>提出一个具体改动：例如“把颜色跟随默认值改成蓝色”。</li><li>让 Agent 找到对应规则，并说明修改方案。</li><li>由演示人员检查改动并更新设备。</li><li>用卡片、口令或动作，体验修改后的效果。</li></ol><pre class="code-preview">示例需求：\n“让张手手势只亮灯，不移动夹爪。\n请说明新规则，并更新使用指南。”</pre><p class="subtle">请与演示人员一起完成规则修改。</p><div id="panel-status" class="panel-status"></div>');
     } else if (id === 'foam') {
-      buttons('foam','正在开发：黑块检测只提供候选。人工示教适用于固定物体位置；记录接近姿态前，请现场摆好泡沫并确认空间。尚未实现任意图像像素到三维抓取。');
+      buttons('foam','开发中：可先体验桌面黑块检测。定点抓取需由演示人员摆好泡沫，记录观察、接近和抬起姿态；运行前请确认周围空间。');
       $('start-mode').textContent='启动黑块检测';
       const calibration = node('div',undefined,'field-row');
       for (const [stage,label] of Object.entries({observe:'记录观察姿态',approach:'记录接近姿态',lift:'记录抬起姿态'})) {

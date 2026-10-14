@@ -195,26 +195,26 @@ class Playground:
         result['capabilities'] = self.vision_engine.capabilities()
         result['capabilities'].update(director=bool(self.director_url), serial=True,
                                       host_worker=time.time() - result['host'].get('updated', 0) < 5)
-        # Software readiness and physical acceptance are intentionally separate.
+        # Viewer messages describe availability; field validation stays in the manuals.
         result['demo_status'] = {DEMO_KEYS[i]: dict(name=name,
             status='developing' if i >= 16 else 'software',
-            message='待硬件接入' if i == 17 else '需现场验收') for i, name in enumerate(DEMO_NAMES)}
+            message='待硬件接入' if i == 17 else '选择项目，开始体验') for i, name in enumerate(DEMO_NAMES)}
         for key in ('face', 'color', 'markers', 'objects', 'track'):
             available = result['capabilities'][key]['available']
             result['demo_status'][key].update(status='ready' if available else 'blocked',
-                message='软件就绪 · 待现场验收' if available else '缺少模型或算法依赖')
+                message='识别已就绪' if available else '缺少模型或算法依赖')
         for key in ('gesture', 'rps'):
             fresh = result['capabilities']['host_worker']
             result['demo_status'][key].update(status='ready' if fresh else 'requires_worker',
-                message='手势推理在线' if fresh else '需启动手势 worker')
+                message='手势推理在线' if fresh else '请连接并加载手势模型')
         for key in ('voice', 'clap'):
             kind = 'speech' if key == 'voice' else 'clap'
             fresh = time.time() - result['workers'].get(kind, {}).get('updated', 0) < 5
             result['capabilities'][key] = dict(available=fresh, backend='Vosk CPU' if key == 'voice' else 'PCM energy')
-            result['demo_status'][key].update(message='音频服务在线 · 待真人测试' if fresh else '需启动音频 worker · 待真人测试')
+            result['demo_status'][key].update(message='音频服务在线' if fresh else '启动实验后开启音频采集')
         result['demo_status']['director'].update(status='ready' if self.director_url else 'requires_worker',
             message='本地模型已配置 · 预览后执行' if self.director_url else '需配置本地模型服务')
-        result['demo_status']['foam'].update(message='正在开发 · 已有暗轮廓检测，抓取未验收')
+        result['demo_status']['foam'].update(message='开发中 · 可体验黑块检测')
         return result
 
     def stop(self, hold=True):
