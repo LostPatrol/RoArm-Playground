@@ -22,6 +22,10 @@ TARGET_RETENTION = .65
 FILTER_TIME = .07
 # Continuous search is deliberately slower than active tracking.
 SCAN_SPEED = 12.0
+# Reset only the camera axes before audience searching; other joints stay held.
+SEARCH_HOME = {'base': 0.0, 'elbow': 90.0}
+# Actual encoders only need coarse settling on this low-precision demonstration arm.
+HOME_TOLERANCE = 3.0
 # Damped position response; avoid chasing a destination at maximum speed until arrival.
 RESPONSE_RATE = 4.5
 # Keep the servo's internal braking profile from stopping at every tiny tick target.
@@ -57,6 +61,7 @@ class SmoothFollower:
         self.last_seen = self.observed = self.tick_time = self.lost_since = None
         self.visible = False
         self.scan_direction = 1
+        self.search_stage = None
         self.phase = 'idle'
 
     def observe(self, targets, joints, stamp, options):
@@ -103,7 +108,7 @@ class SmoothFollower:
         return target
 
     def tick(self, joints, now, mode, options, camera_ready=True):
-        """Generate the next small absolute goal, braking when observations end."""
+        """Generate smooth tracking, camera-reset and horizontal-search goals."""
         if not self.position:
             self.position = {joint: float(joints[joint]) for joint in PROFILES}
             self.hold = dict(joints)
@@ -117,15 +122,39 @@ class SmoothFollower:
         dt = min(elapsed, .05)
         fresh = camera_ready and self.observed is not None and 0 <= now - self.observed <= OBSERVATION_TIMEOUT
         tracking = fresh and self.visible
-        searching = fresh and not self.visible and mode in ('face', 'markers') and (
+        can_search = fresh and not self.visible and mode in ('face', 'markers') and (
             self.lost_since is not None and now - self.lost_since > 1.2)
-        self.phase = 'tracking' if tracking else 'searching' if searching else 'braking'
+        if tracking:
+            self.search_stage = None
+        if can_search and mode == 'face' and self.search_stage is None:
+            self.search_stage = 'homing'
+        homing = can_search and mode == 'face' and self.search_stage == 'homing'
+        if homing and all(abs(self.position[joint] - angle) < .1
+                          and abs(self.velocity[joint]) < .4
+                          and abs(joints[joint] - angle) <= HOME_TOLERANCE
+                          for joint, angle in SEARCH_HOME.items()):
+            self.search_stage = 'searching'
+            # Horizontal scanning holds pitch at the reset destination throughout.
+            self.position['elbow'] = SEARCH_HOME['elbow']
+            self.velocity['elbow'] = self.acceleration['elbow'] = 0.0
+            homing = False
+        searching = can_search and (mode == 'markers' or self.search_stage == 'searching')
+        if tracking:
+            self.phase = 'tracking'
+        elif homing:
+            self.phase = 'homing'
+        elif searching:
+            self.phase = 'searching'
+        else:
+            self.phase = 'braking'
         old = dict(self.position)
         for joint, (max_speed, max_acceleration, max_jerk) in PROFILES.items():
             speed, acceleration = self.velocity[joint], self.acceleration[joint]
             wanted = 0.0
-            if tracking and (joint == 'base' or options.get('pitch', True)):
-                error = self.goal[joint] - self.position[joint]
+            positioning = homing or (tracking and (joint == 'base' or options.get('pitch', True)))
+            if positioning:
+                destination = SEARCH_HOME[joint] if homing else self.goal[joint]
+                error = destination - self.position[joint]
                 # Critically damped position control brakes before reaching the destination.
                 wanted = clamp(RESPONSE_RATE * error, -max_speed, max_speed)
             if searching and joint == 'base':
@@ -138,7 +167,7 @@ class SmoothFollower:
                 elif self.position[joint] <= low + margin:
                     self.scan_direction = 1
                 wanted = self.scan_direction * SCAN_SPEED
-            if tracking and (joint == 'base' or options.get('pitch', True)):
+            if positioning:
                 desired_acceleration = RESPONSE_RATE ** 2 * error - 2 * RESPONSE_RATE * speed
             else:
                 desired_acceleration = 5.0 * (wanted - speed)
@@ -156,7 +185,7 @@ class SmoothFollower:
             if (position == low and new_speed < 0) or (position == high and new_speed > 0):
                 new_speed = acceleration = 0.0
             self.position[joint], self.velocity[joint], self.acceleration[joint] = position, new_speed, acceleration
-        if all(abs(self.velocity[joint]) < .05 for joint in PROFILES) and not tracking and not searching:
+        if all(abs(self.velocity[joint]) < .05 for joint in PROFILES) and not tracking and not homing and not searching:
             self.phase = 'idle'
         # Avoid duplicate writes while stationary; quantization remains the servo's job.
         if not any(abs(old[joint] - self.position[joint]) > .0001 for joint in PROFILES):

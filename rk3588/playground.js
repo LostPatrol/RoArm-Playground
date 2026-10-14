@@ -198,7 +198,7 @@ globalThis.RoArmModel = {
   }
   function renderPanel(id) {
     if (id === 'face') {
-      buttons('face','在画面中站定，观察检测框。可选择只识别、水平与俯仰跟随，或搜索后致意。',`<div class="field-row"><label for="face-behavior">行为</label><select id="face-behavior"><option value="greet">寻找并致意</option><option value="follow">跟随观众</option><option value="detect">只识别</option></select></div>`);
+      buttons('face','多人同屏可显示全部人脸，机械臂保持跟随一位观众。持续未检出会先将摄像头朝向复位，再水平左右往返寻找；只识别模式不运动。',`<div class="field-row"><label for="face-behavior">行为</label><select id="face-behavior"><option value="greet">寻找并致意</option><option value="follow">跟随观众</option><option value="detect">只识别</option></select></div>`);
       bind('start-mode', button => startMode('face',{motion:$('face-behavior').value!=='detect',greet:$('face-behavior').value==='greet'},button));
     } else if (id === 'color') {
       buttons('color','用鲜艳、颜色一致的卡片测试；背景尽量不要出现同色物品。',`<div class="field-row"><label for="target-color">目标颜色</label><select id="target-color"><option value="red">红色</option><option value="green">绿色</option><option value="blue">蓝色</option><option value="yellow">黄色</option></select><select id="color-motion" aria-label="颜色跟随选项"><option value="follow">水平跟随</option><option value="detect">只识别</option></select></div>`);

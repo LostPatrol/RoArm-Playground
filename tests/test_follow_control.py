@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "rk3588"))
 from follow_control import (CONTROL_INTERVAL, IMAGE_GAIN, OBSERVATION_TIMEOUT,
-                            PROFILES, TRACK_LIMITS, SmoothFollower)
+                            PROFILES, TRACK_LIMITS, SEARCH_HOME, HOME_TOLERANCE, SmoothFollower)
 
 
 def box(cx, cy=.5, size=.2, identity=None):
@@ -135,6 +135,55 @@ class FollowControlTests(unittest.TestCase):
         for index in range(1, 121):
             self.assertIsNone(self.step(index * CONTROL_INTERVAL))
             self.assertNotEqual(self.follower.phase, "searching")
+
+    def test_face_loss_resets_camera_before_periodic_horizontal_scan(self):
+        """Return to the viewing pose once, then scan with fixed pitch and held axes."""
+        self.joints.update(base=20.0, elbow=120.0, shoulder=12.0, gripper=70.0)
+        self.follower.reset()
+        self.follower.tick(self.joints, 0.0, 'face', self.options)
+        phases, scan_angles = [], []
+        for index in range(1, 1401):
+            now = index * CONTROL_INTERVAL
+            if index % 3 == 0:
+                self.follower.observe([], self.joints, now, self.options)
+            command = self.follower.tick(self.joints, now, 'face', self.options)
+            phase = self.follower.phase
+            if phase == 'searching' and 'searching' not in phases:
+                self.assertIn('homing', phases)
+                for joint, angle in SEARCH_HOME.items():
+                    self.assertLessEqual(abs(self.joints[joint] - angle), HOME_TOLERANCE)
+            phases.append(phase)
+            if command:
+                self.joints.update(command)
+            if phase == 'searching':
+                scan_angles.append(self.joints['base'])
+                self.assertEqual(self.joints['elbow'], 90.0)
+            self.assertEqual(self.follower.hold['shoulder'], 12.0)
+            self.assertEqual(self.follower.hold['gripper'], 70.0)
+        self.assertLess(min(scan_angles), -50)
+        self.assertGreater(max(scan_angles), 50)
+        self.assertTrue(all(abs(angle) <= 61 for angle in scan_angles))
+        # Homing occurs once during an uninterrupted loss episode, not on each sweep.
+        first_scan = phases.index('searching')
+        self.assertNotIn('homing', phases[first_scan:])
+
+    def test_face_reappears_during_reset_and_camera_failure_aborts_search(self):
+        """Perception can interrupt homing; a stale camera cannot continue searching."""
+        self.joints.update(base=20.0, elbow=120.0)
+        self.follower.reset()
+        self.follower.tick(self.joints, 0.0, 'face', self.options)
+        for index in range(1, 61):
+            now = index * CONTROL_INTERVAL
+            self.follower.observe([], self.joints, now, self.options)
+            self.step(now)
+        self.assertEqual(self.follower.phase, 'homing')
+        self.follower.observe([box(.6)], self.joints, 1.525, self.options)
+        self.step(1.525)
+        self.assertEqual(self.follower.phase, 'tracking')
+        self.assertIsNone(self.follower.search_stage)
+        for index in range(62, 101):
+            self.step(index * CONTROL_INTERVAL, camera_ready=False)
+            self.assertNotIn(self.follower.phase, ('homing', 'searching'))
 
 
 if __name__ == "__main__":
