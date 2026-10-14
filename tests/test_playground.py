@@ -108,43 +108,52 @@ class ProgramTests(unittest.TestCase):
         self.transport = FakeTransport()
         self.arm = ArmController(self.transport, poll=False)
         self.arm.read()
-        self.app = Playground(CameraStub(), self.arm, self.temporary.name, ROOT / 'models')
+        # Motion ticks are explicit in these tests; keep real vision for stale-result tests.
+        with patch.object(Playground, '_control_loop'):
+            self.app = Playground(CameraStub(), self.arm, self.temporary.name, ROOT / 'models')
 
     def tearDown(self):
         self.app.stop(hold=False)
         self.temporary.cleanup()
 
     def test_visual_follow_updates_base_and_pitch_without_arrival_wait(self):
-        """Both camera axes use measured angles and faster continuous goal refresh."""
-        self.app.mode = 'face'
+        """One observation produces small synchronous goals between detector updates."""
+        self.app.mode, self.app.options = 'face', {'greet': False}
         with patch.object(self.arm, 'pose', wraps=self.arm.pose) as pose:
-            self.app._follow('face', {'greet': False},
+            self.app._follow('face', self.app.options,
                              [dict(cx=.8, cy=.75, w=.2, h=.2)], self.app.cancel, 10)
-        pose.assert_called_once()
-        self.assertEqual(pose.call_args.kwargs, dict(simultaneous=True))
-        self.assertAlmostEqual(pose.call_args.args[0]['base'], -11.4)
-        self.assertEqual(pose.call_args.args[0]['elbow'], 97)
+            pose.assert_not_called()
+            for index in range(8):
+                self.app._control_tick('face', self.app.options, self.app.cancel, 10 + index * .025)
+        self.assertGreater(pose.call_count, 4)
+        goals = pose.call_args_list[-1].args[0]
+        self.assertTrue(-2 < goals['base'] < 0)
+        self.assertTrue(90 < goals['elbow'] < 92)
         movement = [command for command in self.transport.calls if command['T'] in (101, 102)]
-        self.assertEqual(len(movement), 1)
-        self.assertEqual(movement[0]['T'], 102)
-        self.assertEqual((movement[0]['spd'], movement[0]['acc']), (0, 0))
+        self.assertEqual(len(movement), pose.call_count)
+        self.assertTrue(all(command['T'] == 102 and command['spd'] > 0 and command['acc'] > 0
+                            for command in movement))
 
-    def test_follow_refresh_interval_and_pitch_toggle(self):
-        """Fast camera results are throttled to 50 ms without accumulating commands."""
-        self.app.mode = 'color'
-        target = [dict(cx=.9, cy=.9, w=.2, h=.2)]
-        with patch.object(self.arm, 'pose') as pose:
-            self.app._follow('color', {'pitch': False}, target, self.app.cancel, 10)
-            self.app._follow('color', {'pitch': False}, target, self.app.cancel, 10.04)
-            self.app._follow('color', {'pitch': False}, target, self.app.cancel, 10.06)
-        self.assertEqual(pose.call_count, 2)
-        self.assertTrue(all(call.args[0] == dict(base=-12) for call in pose.call_args_list))
+    def test_follow_pitch_toggle_and_cached_reference(self):
+        """Pitch can stay fixed, and ticks must not request synchronous feedback."""
+        self.app.mode, self.app.options = 'color', {'pitch': False}
+        self.app._follow('color', self.app.options,
+                         [dict(cx=.9, cy=.9, w=.2, h=.2)], self.app.cancel, 10)
+        self.transport.calls.clear()
+        with patch.object(self.arm, 'pose', wraps=self.arm.pose) as pose:
+            for index in range(8):
+                self.app._control_tick('color', self.app.options, self.app.cancel, 10 + index * .025)
+        self.assertGreater(pose.call_count, 4)
+        self.assertTrue(all(call.args[0]['elbow'] == 90 for call in pose.call_args_list))
+        self.assertFalse(any(command['T'] == 105 for command in self.transport.calls))
 
     def test_face_greeting_retains_detection_and_rearms_after_loss(self):
         self.app.mode = 'face'
         target = [dict(cx=.5, cy=.5, w=.2, h=.2)]
         with patch.object(self.app, '_greet') as greet:
             self.app._follow('face', {}, target, self.app.cancel, 20)
+            self.app._control_tick('face', {}, self.app.cancel, 20)
+            self.app._control_tick('face', {}, self.app.cancel, 20.025)
             self.app.job.join(1)
         greet.assert_called_once()
         self.assertEqual(self.app.mode, 'face')
@@ -159,6 +168,7 @@ class ProgramTests(unittest.TestCase):
         self.app.job.is_alive.return_value = True
         with patch.object(self.arm, 'pose') as pose, patch.object(self.arm, 'move') as move:
             self.app._follow('face', {}, [dict(cx=.9, cy=.9, w=.2, h=.2)], self.app.cancel, 20)
+            self.app._control_tick('face', {}, self.app.cancel, 20)
         pose.assert_not_called()
         move.assert_not_called()
         self.app.job = None
@@ -167,11 +177,12 @@ class ProgramTests(unittest.TestCase):
         """Manual motion disables follow without changing the perception mode/token."""
         self.app.mode = 'face'
         self.app.options = {'motion': True, 'greet': False}
+        self.app._follow('face', self.app.options, [dict(cx=.9, cy=.8, w=.2, h=.2)], self.app.cancel, 20)
+        self.app._control_tick('face', self.app.options, self.app.cancel, 20)
         attempted = threading.Event()
         def late_follow():
             attempted.set()
-            self.app._follow('face', {'motion': True, 'greet': False},
-                             [dict(cx=.9, cy=.8, w=.2, h=.2)], self.app.cancel, 20)
+            self.app._control_tick('face', {'motion': True, 'greet': False}, self.app.cancel, 20.025)
         with self.app.action_lock:
             worker = threading.Thread(target=late_follow)
             worker.start()
@@ -185,6 +196,30 @@ class ProgramTests(unittest.TestCase):
         self.assertEqual(len(commands), 1, commands)
         self.assertAlmostEqual(commands[0]['rad'], math.radians(5))
         self.assertFalse(any(command['T'] == 102 for command in self.transport.calls))
+
+    def test_old_motion_tick_cannot_run_after_stop_or_same_mode_restart(self):
+        """The trajectory token yields to stop and a later activation of the same mode."""
+        self.app.mode, self.app.options = 'color', {'motion': True}
+        token = self.app.cancel
+        self.app._follow('color', self.app.options, [dict(cx=.9, cy=.5, w=.2, h=.2)], token, 10)
+        self.app._control_tick('color', self.app.options, token, 10)
+        self.app.stop(hold=False)
+        self.app.mode = 'color'
+        self.app.cancel = threading.Event()
+        self.transport.calls.clear()
+        self.app._control_tick('color', self.app.options, token, 10.025)
+        self.assertFalse(any(command['T'] == 102 for command in self.transport.calls))
+        self.assertEqual(self.app.follower.position, {})
+
+    def test_local_inference_reuses_atomic_capture_image(self):
+        """Local capture pixels and frame metadata are not replaced by JPEG decode."""
+        image = np.zeros((12, 16, 3), np.uint8)
+        self.app.camera.image, self.app.camera.updated = image, 12.5
+        with patch('playground.cv2.imdecode') as decode:
+            frame, sequence, stamp = self.app.frame(metadata=True)
+        self.assertIs(frame, image)
+        self.assertEqual((sequence, stamp), (1, 12.5))
+        decode.assert_not_called()
 
     def test_drag_api_passes_direct_coordinates_and_fixed_clamp(self):
         with patch.object(self.arm, 'cartesian', return_value={}) as cartesian:

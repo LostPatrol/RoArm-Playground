@@ -368,22 +368,9 @@ class VisionEngine:
         self.track_points = moved[good][inliers.ravel() != 0].reshape(-1, 1, 2)
         return (*low, *(high - low))
 
-    def _track(self, frame, options):
-        if self.template is None:
-            raise ValueError("Select a textured target before tracking")
-        if frame.shape[:2] != self.target_shape:
-            raise ValueError("Camera resolution changed; select the target again")
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        source = "Lucas-Kanade optical flow"
-        tracked = self._flow_track(gray)
-        if tracked is not None:
-            x, y, w, h = map(int, tracked)
-            patch = gray[max(0, y):y + h, max(0, x):x + w]
-            if not patch.size or patch.std() < 4:
-                tracked = None
+    def _match_templates(self, gray, origin=(0, 0)):
+        """Find a multiscale match in a local window or the complete image."""
         best = (-1.0, None)
-        # Global reacquisition covers jumps beyond optical flow's window. The original
-        # template is retained for recovery after loss; the recent template follows appearance.
         h0, w0 = self.template.shape
         for candidate in (self.template, self.anchor_template):
             for scale in (.75, 1.0, 1.25):
@@ -394,13 +381,45 @@ class VisionEngine:
                 response = cv2.matchTemplate(gray, template, cv2.TM_CCOEFF_NORMED)
                 _, score, _, position = cv2.minMaxLoc(response)
                 if np.isfinite(score) and score > best[0]:
-                    best = (float(score), (*position, w, h))
-        score, matched = best
-        if matched is not None and score >= float(options.get("match_threshold", .65)):
-            if tracked is None or abs(tracked[0] - matched[0]) + abs(tracked[1] - matched[1]) > 30:
+                    best = (float(score), (position[0] + origin[0], position[1] + origin[1], w, h))
+        return best
+
+    def _track(self, frame, options):
+        """Prefer validated optical flow, then local matching, then global recovery."""
+        if self.template is None:
+            raise ValueError("Select a textured target before tracking")
+        if frame.shape[:2] != self.target_shape:
+            raise ValueError("Camera resolution changed; select the target again")
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        source = "Lucas-Kanade optical flow"
+        tracked = self._flow_track(gray)
+        threshold = float(options.get("match_threshold", .65))
+        h0, w0 = self.template.shape
+        score = -1.0
+        if tracked is not None:
+            x, y, w, h = map(int, tracked)
+            patch = gray[max(0, y):y + h, max(0, x):x + w]
+            if patch.size and patch.std() >= 4:
+                # Flow already checks forward/backward, appearance error and RANSAC.
+                # Correlation is diagnostic: valid rotation need not match an unrotated patch.
+                normalized = cv2.resize(patch, (w0, h0))
+                score = float(cv2.matchTemplate(normalized, self.template, cv2.TM_CCOEFF_NORMED)[0, 0])
+            else:
+                tracked = None
+        if tracked is None:
+            x, y, w, h = map(int, self.track_box)
+            margin = max(w, h)
+            left, top = max(0, x - margin), max(0, y - margin)
+            right, bottom = min(gray.shape[1], x + w + margin), min(gray.shape[0], y + h + margin)
+            score, matched = self._match_templates(gray[top:bottom, left:right], (left, top))
+            source = "multiscale local template"
+            if matched is None or score < threshold:
+                # Full-frame recovery is retained for large jumps and target reappearance.
+                score, matched = self._match_templates(gray)
+                source = "multiscale template reacquisition"
+            if matched is not None and score >= threshold:
                 self._init_tracker(frame, matched)
-            tracked = matched
-            source = "multiscale template reacquisition"
+                tracked = matched
         if tracked is None:
             return {"detections": [], "lost": True, "match_score": score, "track_confidence": 0.0}
         self.track_box = tracked

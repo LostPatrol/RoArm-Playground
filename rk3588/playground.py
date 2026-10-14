@@ -22,6 +22,8 @@ import cv2
 import numpy as np
 
 from arm_serial import JOINTS, LIMITS
+from follow_control import (SmoothFollower, CONTROL_INTERVAL, SERVO_SPEED,
+                            SERVO_ACCELERATION, SERVO_STEPS_PER_TURN)
 from vision import VisionEngine
 
 
@@ -122,13 +124,18 @@ class Playground:
         self.grasp = dict(poses=poses, status='developing', message='需示教观察、接近和抬起三个姿态')
         self.director_url, self.director_model = director_url, director_model
         self.last_motion = self.last_seen = self.last_trigger = 0
-        self.scan_direction = 1
         self.face_greeted = False
         self.last_greet = self.last_target_light = 0
+        self.follower = SmoothFollower()
+        self.follow_token = self.cancel
+        self.follow_commands = 0  # Successful tracking writes since this service started.
+        self.follow_sent = self.follow_interval_ms = 0
+        self.follow_goal_steps = None
         self.clap_count = 0
         self.client_sequences = {}
         self.event('Playground 已启动，等待串口实测反馈')
         threading.Thread(target=self._vision_loop, daemon=True).start()
+        threading.Thread(target=self._control_loop, daemon=True).start()
 
     def event(self, message, level='info'):
         with self.lock:
@@ -148,15 +155,20 @@ class Playground:
         temporary.write_text(json.dumps(self.programs, ensure_ascii=False, indent=2) + '\n')
         temporary.replace(path)
 
-    def frame(self):
+    def frame(self, metadata=False):
+        """Read one atomic capture packet; local inference reuses its decoded image."""
         with self.camera.condition:
             if not self.camera.status()['ready'] or self.camera.frame is None:
                 raise RuntimeError('摄像头未就绪')
             encoded = self.camera.frame
-        image = cv2.imdecode(np.frombuffer(encoded, dtype=np.uint8), cv2.IMREAD_COLOR)
+            image = getattr(self.camera, 'image', None)
+            sequence = self.camera.sequence
+            stamp = getattr(self.camera, 'updated', time.monotonic())
+        if image is None:
+            image = cv2.imdecode(np.frombuffer(encoded, dtype=np.uint8), cv2.IMREAD_COLOR)
         if image is None:
             raise RuntimeError('摄像头图像解码失败')
-        return image
+        return (image, sequence, stamp) if metadata else image
 
     def state(self):
         with self.lock:
@@ -172,9 +184,12 @@ class Playground:
                           panorama=self.panorama, difference=self.difference, imu=self.imu,
                           voice=self.voice, host=self.host, director=self.director,
                           workers=self.workers,
+                          tracking=self.follower.status(),
                           grasp=self.grasp,
                           running=bool(self.job and self.job.is_alive()), job=self.job_name)
             result = json.loads(json.dumps(result))
+        result['tracking'].update(command_count=self.follow_commands,
+                                  command_interval_ms=round(self.follow_interval_ms, 2))
         result['arm'] = self.arm.snapshot()
         result['camera'] = self.camera.status()
         result['capabilities'] = self.vision_engine.capabilities()
@@ -203,8 +218,10 @@ class Playground:
         return result
 
     def stop(self, hold=True):
+        """Cancel automatic commands immediately; retain the explicit hold operation."""
         with self.action_lock:
             self.cancel.set()
+            self.follower.reset()
             self._stop_audio()
             with self.lock:
                 self.mode = 'manual'
@@ -269,6 +286,8 @@ class Playground:
             if self.job and self.job.is_alive():
                 raise RuntimeError('已有动作程序运行，请先停止')
             self.cancel = threading.Event()
+            self.follower.reset()
+            self.follow_token = self.cancel
             token = self.cancel
             self.job_name = name
             self.mode = mode
@@ -349,99 +368,119 @@ class Playground:
                 self.host.update(data, updated=time.time())
         return dict(received=True)
 
-    def _follow(self, mode, options, targets, token, now):
-        """Refresh proportional image-centering goals without waiting for joint arrival.
-
-        Goals start at actual feedback. Up to 50 ms updates use one simultaneous
-        maximum-speed servo command; a greeting owns motion until it ends.
-        """
-        if self.job and self.job.is_alive():
-            return
+    def _follow(self, mode, options, targets, token, now, joints=None):
+        """Publish a capture-time destination without waiting for or issuing motion."""
         with self.action_lock:
-            if mode != self.mode or token is not self.cancel or token.is_set():
-                return
-            # Manual joint control keeps mode/token for perception, but disables
-            # motion. Re-read that flag after waiting for the same action lock.
-            if not self.options.get('motion', True) or (self.job and self.job.is_alive()):
-                return
-            if targets:
-                self.last_seen = now
-            elif mode == 'face' and now - self.last_seen > 2:
-                self.face_greeted = False
-            if now - self.last_motion < .05:
+            if (mode != self.mode or token is not self.cancel or token.is_set()
+                    or not self.options.get('motion', True)
+                    or (self.job and self.job.is_alive())):
                 return
             state = self.arm.snapshot()
             if not state['connected']:
                 return
-            if targets:
-                target = max(targets, key=lambda item: item['w'] * item['h'])
-                if mode in ('face', 'markers') and now - self.last_target_light > 1:
-                    self.arm.led(160)
-                    self.last_target_light = now
-                horizontal, vertical = target['cx'] - .5, target['cy'] - .5
-                centered = abs(horizontal) <= .06 and abs(vertical) <= .08
-                # Positive base turns left; positive elbow tilts the mounted camera down.
-                goals = {}
-                for joint, error, gain, limit, sign, low, high in (
-                        ('base', horizontal, 38, 12, -1, -175, 175),
-                        ('elbow', vertical, 28, 9, float(options.get('pitch_direction', 1)), 5, 170)):
-                    if joint == 'elbow' and not options.get('pitch', True):
-                        continue
-                    angle = state['joints'].get(joint)
-                    if angle is not None and abs(error) > .03:
-                        angle = max(low, min(high, angle + sign * max(-limit, min(limit, error * gain))))
-                        goals[joint] = angle
-                if goals:
-                    self.arm.pose(goals, simultaneous=True)
-                if (mode == 'face' and centered and options.get('greet', True)
-                        and not self.face_greeted and now - self.last_greet > 8):
-                    self.face_greeted = True
-                    self.last_greet = now
-                    self.event('找到观众，亮灯并点头致意；之后继续识别与跟随')
-                    # _start_job defaults to manual: explicitly retain face mode and
-                    # perception, otherwise the first greeting permanently stops detection.
-                    self._start_job('人脸致意', self._greet, mode='face')
-            elif mode in ('face', 'markers') and now - self.last_seen > 1:
-                angle = state['joints'].get('base')
-                if angle is not None:
-                    low, high = float(options.get('scan_min', -60)), float(options.get('scan_max', 60))
-                    if not -175 <= low < high <= 175:
-                        raise ValueError('扫描范围须在 -175..175 度且起点小于终点')
-                    if angle >= high:
-                        self.scan_direction = -1
-                    elif angle <= low:
-                        self.scan_direction = 1
-                    self.arm.move('base', angle=max(low, min(high, angle + self.scan_direction * 6)))
-            self.last_motion = now
+            if self.follow_token is not token:
+                self.follower.reset()
+                self.follow_token = token
+            target = self.follower.observe(targets, joints or state['joints'], now, options)
+            if target:
+                self.last_seen = now
+            elif mode == 'face' and now - self.last_seen > 2:
+                self.face_greeted = False
+
+    def _control_tick(self, mode, options, token, now):
+        """Serialize one continuous tracking tick with manual control and cancellation."""
+        with self.action_lock:
+            if mode != self.mode or token is not self.cancel or token.is_set():
+                return
+            if (mode not in ('face', 'color', 'markers', 'track')
+                    or not self.options.get('motion', True)
+                    or (self.job and self.job.is_alive())):
+                self.follower.reset()
+                return
+            state = self.arm.snapshot()
+            if not state['connected']:
+                self.follower.reset()
+                return
+            if self.follow_token is not token:
+                self.follower.reset()
+                self.follow_token = token
+            if not self.follower.position:
+                self.follow_goal_steps = None
+            goals = self.follower.tick(state['joints'], now, mode, options,
+                                       camera_ready=self.camera.status()['ready'])
+            steps = tuple(round(goals[joint] * SERVO_STEPS_PER_TURN / 360)
+                          for joint in ('base', 'elbow')) if goals else None
+            if goals and steps != self.follow_goal_steps:
+                # Hold nontracking axes at activation angles rather than chasing encoder noise.
+                reference = {joint: max(LIMITS[joint][0], min(LIMITS[joint][1], angle))
+                             for joint, angle in self.follower.hold.items()}
+                self.arm.pose(goals, simultaneous=True, speed=SERVO_SPEED,
+                              acceleration=SERVO_ACCELERATION, reference=reference)
+                sent = time.monotonic()
+                self.follow_interval_ms = (sent - self.follow_sent) * 1000 if self.follow_sent else 0
+                self.follow_sent = sent
+                self.follow_commands += 1
+                self.follow_goal_steps = steps
+                self.last_motion = now
+            target = self.follower.target
+            if self.follower.phase != 'tracking' or not target:
+                return
+            if mode in ('face', 'markers') and now - self.last_target_light > 1:
+                self.arm.led(160)
+                self.last_target_light = now
+            centered = abs(target['cx'] - .5) <= .06 and abs(target['cy'] - .5) <= .08
+            settled = all(abs(speed) < 3 for speed in self.follower.velocity.values())
+            if (mode == 'face' and centered and settled and options.get('greet', True)
+                    and not self.face_greeted and now - self.last_greet > 8):
+                self.face_greeted = True
+                self.last_greet = now
+                self.event('找到观众，亮灯并点头致意；之后继续识别与跟随')
+                self._start_job('人脸致意', self._greet, mode='face')
+
+    def _control_loop(self):
+        """Tick from current time; never queue or replay missed motion updates."""
+        while True:
+            started = time.monotonic()
+            with self.lock:
+                mode, options, token = self.mode, dict(self.options), self.cancel
+            try:
+                self._control_tick(mode, options, token, started)
+            except Exception as exc:
+                with self.action_lock:
+                    self.follower.reset()
+                if time.monotonic() - self.last_trigger > 3:
+                    self.event('跟踪控制：' + str(exc), 'error')
+                    self.last_trigger = time.monotonic()
+            time.sleep(max(.001, CONTROL_INTERVAL - (time.monotonic() - started)))
 
     def _vision_loop(self):
-        previous_sequence = -1
+        """Infer newest capture packets; continuous movement runs in another thread."""
+        previous = None
         while True:
-            time.sleep(.025)
+            time.sleep(.005)
             with self.lock:
                 mode, options = self.mode, dict(self.options)
                 token = self.cancel
             if mode not in ('face', 'color', 'markers', 'objects', 'track', 'foam'):
+                time.sleep(.02)
                 continue
-            if self.camera.sequence == previous_sequence:
+            if (token, self.camera.sequence) == previous:
                 continue
             try:
-                image = self.frame()
-                previous_sequence = self.camera.sequence
+                image, sequence, stamp = self.frame(metadata=True)
+                previous = (token, sequence)
+                joints = self.arm.snapshot()['joints']
                 with self.vision_lock:
                     result = self.vision_engine.process(image, mode, options)
-                now = time.monotonic()
+                result.update(frame_sequence=sequence,
+                              frame_age_ms=round((time.monotonic() - stamp) * 1000, 2))
                 with self.lock:
                     if mode != self.mode or token is not self.cancel or token.is_set():
                         continue
                     self.vision = result
-                    if result.get('detections'):
-                        self.last_seen = now
-                targets = result.get('detections', [])
-                # Perception-only modes never move the arm automatically.
                 if mode in ('objects', 'foam') or not options.get('motion', True):
                     continue
-                self._follow(mode, options, targets, token, now)
+                self._follow(mode, options, result.get('detections', []), token, stamp, joints)
             except Exception as exc:
                 with self.lock:
                     if mode != self.mode or token is not self.cancel or token.is_set():
@@ -629,6 +668,9 @@ class Playground:
             if mode == 'foam':
                 options = dict({'roi': [0, .35, 1, .65]}, **options)
             self.stop(hold=self.arm.snapshot()['connected'])
+            if mode == 'track' and 'box' in data:
+                with self.vision_lock:
+                    self.vision_engine.set_target(self.frame(), data['box'])
             with self.lock:
                 self.cancel = threading.Event()
                 self.mode, self.options = mode, options
@@ -649,6 +691,7 @@ class Playground:
                     # Manual motion takes precedence while image inference keeps running.
                     if self.options.get('motion', True) and self.mode not in ('objects', 'foam'):
                         self.options = dict(self.options, motion=False)
+                        self.follower.reset()
                         self.event('手动控制接管运动，视觉识别继续；重新启动跟随可恢复自动运动')
                 elif self.mode != 'manual':
                     self.stop(hold=self.arm.snapshot()['connected'])
@@ -696,9 +739,7 @@ class Playground:
             validate_steps(steps)
             return self._start_job(data.get('name', '动作程序'), lambda token: self._execute(steps, token))
         if action == 'track_target':
-            self.action(dict(action='mode', mode='track', options=data.get('options', {})))
-            with self.vision_lock:
-                self.vision_engine.set_target(self.frame(), data.get('box'))
+            self.action(dict(action='mode', mode='track', options=data.get('options', {}), box=data.get('box')))
             return dict(target=data.get('box'))
         if action == 'difference_capture':
             self.stop()

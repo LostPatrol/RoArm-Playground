@@ -186,7 +186,8 @@ class ArmController:
             self.state.pop('cartesian_target', None)
         return angle
 
-    def pose(self, joints, simultaneous=False):
+    def pose(self, joints, simultaneous=False, speed=0, acceleration=0, reference=None):
+        """Send a pose; tracking can supply cached held axes and native servo limits."""
         # Validate the whole pose before moving any joint.
         if not isinstance(joints, dict) or not joints:
             raise ValueError('姿态不能为空')
@@ -196,17 +197,20 @@ class ArmController:
         if simultaneous:
             # Negate only the shoulder because its servo is mounted backwards.
             # Follow both camera axes with one native SyncWrite; hold other measured axes.
-            goal = dict(self.measured()['joints'], **joints)
+            goal = dict(self.measured()['joints'] if reference is None else reference, **joints)
+            if any(name not in goal or not math.isfinite(float(goal[name])) or
+                   not LIMITS[name][0] <= float(goal[name]) <= LIMITS[name][1] for name in JOINTS):
+                raise ValueError('同步姿态参考角度超出范围')
             self.transport.command(dict(T=102, base=math.radians(goal['base']),
                 shoulder=-math.radians(goal['shoulder']), elbow=math.radians(goal['elbow']),
-                hand=math.radians(goal['gripper']), spd=0, acc=0))
-            self.direct_speed_ready = True
+                hand=math.radians(goal['gripper']), spd=speed, acc=acceleration))
+            self.direct_speed_ready = not bool(speed or acceleration)
             with self.lock:
                 self.state['targets'].update(goal)
                 self.state.pop('cartesian_target', None)
         else:
             for name, angle in joints.items():
-                self.move(name, angle=angle)
+                self.move(name, angle=angle, speed=speed, acceleration=acceleration)
 
     def led(self, value):
         value = int(value)

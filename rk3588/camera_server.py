@@ -129,6 +129,7 @@ class Camera:
         self.args = args
         self.condition = threading.Condition()
         self.frame = None
+        self.image = None  # Reuse the decoded capture for local inference, without a JPEG round trip.
         self.sequence = 0
         self.updated = 0
         self.configuration = dict(width=args.width, height=args.height, fps=args.fps, fourcc='MJPG')
@@ -250,6 +251,7 @@ class Camera:
                         count += 1
                         with self.condition:
                             self.frame = jpeg.tobytes()
+                            self.image = image
                             self.sequence += 1
                             self.updated = time.monotonic()
                             self.details = dict(device=device, width=image.shape[1],

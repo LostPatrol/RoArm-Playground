@@ -171,8 +171,11 @@ class VisionTests(unittest.TestCase):
                 image = np.full_like(self.frame, 240)
                 x, y = 70 + index * 8, 70 + index * 4
                 image[y:y + 60, x:x + 80] = changed
-                result = self.engine.process(image, 'track')
+                with patch.object(self.engine, '_match_templates', wraps=self.engine._match_templates) as matcher:
+                    result = self.engine.process(image, 'track')
                 self.assertFalse(result['lost'], result)
+                if result['backend'] == 'Lucas-Kanade optical flow':
+                    matcher.assert_not_called()
                 used_flow |= result['backend'] == 'Lucas-Kanade optical flow'
                 box = result['detections'][0]
                 self.assertAlmostEqual(box['cx'], (x + 40) / 320, delta=.04)
