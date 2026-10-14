@@ -51,19 +51,19 @@ globalThis.RoArmModel = {
   const PROJECTS = [
     ['face','寻找观众，亮灯致意','让机器人发现人脸，跟随观众，并点头打个招呼。','◎','basic','视觉 · 互动'],
     ['color','魔法指挥棒','挥动彩色卡片，让摄像头和机械臂追随你的方向。','✦','basic','颜色 · 跟随'],
-    ['gesture','手势遥控','用张手、握拳和其他手势，指挥灯光与夹爪。','✋','basic','手势 · 控制'],
-    ['voice','中文语音控制','说一句短口令，观察声音如何变成文字和动作。','◖','basic','声音 · 指令'],
+    ['gesture','手势遥控','用张手、握拳和其他手势，指挥灯光与夹爪。','✋','basic','MediaPipe · 手势'],
+    ['voice','中文语音控制','说一句短口令，观察声音如何变成文字和动作。','◖','basic','Vosk · 离线语音'],
     ['clap','拍手导演与节奏律动','把拍手变成一个信号，让机械臂回应你的节奏。','♫','basic','声音 · 节奏'],
     ['teach','动作示教与回放','保存你调好的姿态，再让机器人重演一段动作。','↺','creative','记忆 · 序列'],
     ['program','图形化动作编程','组合动作积木，添加重复或条件，编出自己的节目。','▦','creative','逻辑 · 编程'],
     ['markers','视觉标记寻宝','藏一张编号标记，让机器人找到它并告诉你编号。','▣','basic','标记 · 搜索'],
     ['objects','常见物品识别与竞猜','展示杯子、瓶子等物品，看看机器人认出了什么。','◇','basic','物品 · 识别'],
-    ['rps','和机器人猜拳','出一个手势，让机器人出拳、判定胜负并庆祝。','✌','basic','手势 · 游戏'],
+    ['rps','和机器人猜拳','出一个手势，让机器人出拳、判定胜负并庆祝。','✌','basic','MediaPipe · 猜拳'],
     ['track','框选目标并追踪','直接在画面里框出目标，让机器人持续寻找它。','⌗','advanced','目标 · 追踪'],
     ['panorama','机器人全景摄影师','分段转动、拍摄与拼接，组成一张更宽的照片。','▤','creative','拍摄 · 拼接'],
     ['difference','机器人找不同','移动一个物品，用前后两张照片发现世界的变化。','◑','basic','图像 · 比较'],
     ['digital','真实反馈驱动的三维机械臂','转动实体机械臂，在三维模型中看到相同的变化。','⌬','creative','空间 · 反馈'],
-    ['director','自然语言机器人小导演','写一句话，让本地模型把你的想法编排成动作。','❝','advanced','语言 · 编排'],
+    ['director','自然语言机器人小导演','写一句话，让本地模型把你的想法编排成动作。','❝','advanced','本地 LLM · 编排'],
     ['agent','现场 Agent 改规则挑战','提出新规则，修改代码，再到真实设备上验证。','↗','creative','创意 · 开发'],
     ['foam','黑色泡沫识别与抓取尝试','先找到桌面黑块，再逐步验证接近和夹起。','⬡','advanced','正在开发'],
     ['imu','头部姿态随动','校准中立位，让头部姿态映射到机械臂方向。','⤴','advanced','硬件接入中']
@@ -137,7 +137,16 @@ globalThis.RoArmModel = {
     if(id==='foam')return '开发中 · 可体验黑块检测';
     if(id==='imu')return '硬件待接入 · 支持模拟输入';
     if (typeof info === 'string') return info;
-    if (value === true || value?.available) return info?.message || '已就绪，可以开始体验';
+    // Keep concise technology labels tied to the reported backend, including face fallback.
+    const technology = {
+      'YuNet OpenCV DNN CPU':'YuNet', 'OpenCV Haar fallback':'Haar',
+      'OpenCV HSV':'HSV 色彩识别', 'AprilTag tag36h11':'AprilTag',
+      'YOLOX-Nano OpenCV DNN CPU':'YOLOX-Nano',
+      'OpenCV adaptive tracking + multiscale template reacquisition':'光流追踪 · 模板重捕获',
+      'OpenCV absolute image difference':'图像差分', 'OpenCV Stitcher':'OpenCV 全景拼接',
+      'Vosk CPU':'Vosk', 'PCM energy':'声音能量检测'
+    }[value?.backend];
+    if (value === true || value?.available) return (technology ? technology+' · ' : '')+(info?.message || '已就绪，可以开始体验');
     if (info?.message) return info.message;
     if (info?.status) return info.status;
     return '等待设备能力检查';
@@ -204,7 +213,7 @@ globalThis.RoArmModel = {
       buttons('color','用鲜艳、颜色一致的卡片互动；背景尽量不要出现同色物品。',`<div class="field-row"><label for="target-color">目标颜色</label><select id="target-color"><option value="red">红色</option><option value="green">绿色</option><option value="blue">蓝色</option><option value="yellow">黄色</option></select><select id="color-motion" aria-label="颜色跟随选项"><option value="follow">水平跟随</option><option value="detect">只识别</option></select></div>`);
       bind('start-mode', button => startMode('color',{color:$('target-color').value,motion:$('color-motion').value === 'follow'},button));
     } else if (['gesture','objects','markers','clap'].includes(id)) {
-      const descriptions = {gesture:'连接上位机并加载手部模型后，将完整手掌放在画面中；识别状态由设备返回。',objects:'把杯子、瓶子等常见物品放在镜头前，观察识别结果。',markers:'使用 AprilTag tag36h11 标记，将其正面朝向摄像头；识别后显示编号与边框。',clap:'先确保音频设备可用。拍一次手，观察声音事件与动作回应。'};
+      const descriptions = {gesture:'连接上位机并加载 MediaPipe 手势模型后，将完整手掌放在画面中，体验实时手势控制。',objects:'YOLOX-Nano 物体检测模型在设备本地运行。把杯子、瓶子等常见物品放在镜头前，观察识别结果。',markers:'使用 AprilTag tag36h11 标记，将其正面朝向摄像头；识别后显示编号与边框。',clap:'先确保音频设备可用。拍一次手，观察声音事件与动作回应。'};
       buttons(id,descriptions[id]);
       if(id==='gesture')hostConnectPanel('gestures');
       if (id === 'clap') {
@@ -212,7 +221,7 @@ globalThis.RoArmModel = {
         test.onclick = () => action('clap',{},test); row.append(test); $('experiment-panel').append(row);
       }
     } else if (id === 'voice') {
-      buttons('voice','启动实验后，对着麦克风说出短口令；也可以在下方输入文字，体验口令控制。',`<div class="field-row"><input class="grow" id="speech-text" value="找人" aria-label="文字口令"><button id="speech-send">执行文字口令</button></div>`);
+      buttons('voice','Vosk 离线中文语音识别将声音转成口令。启动实验后，对着麦克风说出短口令；也可以输入文字，体验口令控制。',`<div class="field-row"><input class="grow" id="speech-text" value="找人" aria-label="文字口令"><button id="speech-send">执行文字口令</button></div>`);
       bind('speech-send',button => action('speech',{text:$('speech-text').value},button));
     } else if (id === 'rps') {
       buttons('rps','加载手势模型后，对着摄像头出拳；也可以点击下方按钮，选择你的出拳。',`<div class="field-row"><span class="tag">点击出拳</span><button id="rps-rock">✊ 石头</button><button id="rps-paper">✋ 布</button><button id="rps-scissors">✌ 剪刀</button></div>`);
@@ -242,7 +251,7 @@ globalThis.RoArmModel = {
       bind('model-reset',() => { cameraYaw=.75;cameraPitch=.32;drawRobot(); });
       bind('raw-toggle',() => { $('raw-state').hidden=!$('raw-state').hidden; $('raw-state').textContent=JSON.stringify(state.arm?.raw || {},null,2); });
     } else if (id === 'director') {
-      panel('<h3>把一句话编成动作</h3><p>先生成动作预览，再明确执行。模型由上位机或板端本地服务提供；服务不可用时会显示失败原因。</p><textarea id="director-text" aria-label="导演指令">先看看左边，再回到中间，最后亮灯打招呼。</textarea><div class="field-row"><button class="primary" id="director-plan">生成动作预览</button><button id="director-execute" disabled>执行预览动作</button></div><pre id="director-preview" class="code-preview">等待生成…</pre><div id="panel-status" class="panel-status"></div>');
+      panel('<h3>把一句话编成动作</h3><p>本地大语言模型将自然语言编排为机器人动作。先生成动作预览，再点击执行；服务不可用时会显示原因。</p><textarea id="director-text" aria-label="导演指令">先看看左边，再回到中间，最后亮灯打招呼。</textarea><div class="field-row"><button class="primary" id="director-plan">生成动作预览</button><button id="director-execute" disabled>执行预览动作</button></div><pre id="director-preview" class="code-preview">等待生成…</pre><div id="panel-status" class="panel-status"></div>');
       hostConnectPanel('director');
       bind('director-plan',async button => { directorSteps=[]; $('director-execute').disabled=true; const result=await action('director',{text:$('director-text').value},button); directorSteps=result?.steps || []; $('director-preview').textContent=result ? JSON.stringify(result,null,2) : '生成失败，请查看运行信息'; $('director-execute').disabled=!directorSteps.length; });
       bind('director-execute',button => action('director_run',{steps:directorSteps},button));
