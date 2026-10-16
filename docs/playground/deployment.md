@@ -3,6 +3,8 @@
 
 上位机支持Ubuntu24.04或原生Windows/Python3.12；Windows演示笔记本安装见[windows.md](windows.md)。RK3588保持Ubuntu20.04/Python3.8/OpenCV4.8，无需升级系统或NPU运行时。
 
+换场地或使用无互联网的手机热点，见[手机热点与换网络](hotspot.md)。自动连接与固定网页地址是两个独立条件。
+
 ## 接线与协议
 
 USB摄像头/网卡→USB-A Hub→RK3588，RK独立供电；Type-C→机械臂USB/ESP32口，不能误接LADAR。采用唯一CP2102N的`/dev/serial/by-id/`，多候选时指定`--serial-device`。

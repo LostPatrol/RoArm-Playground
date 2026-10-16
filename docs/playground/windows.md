@@ -3,6 +3,8 @@
 
 Windows 原生运行8082模型管理器、MediaPipe手势/猜拳识别和8081真实Qwen导演。浏览器访问RK3588网页；相机、USB串口、板端视觉、中文语音/拍手、示教/程序及运行数据继续由RK提供。无需WSL、虚拟机、Docker、CUDA Toolkit或Visual Studio。
 
+手机热点下的自动联网、IP变化及防火墙更新见[换场地使用](hotspot.md)。
+
 默认项目目录 `D:\RoArm-M2`；使用已有 `D:\softwares\miniconda\python.exe` 的Python3.12创建独立 `.venv`，不修改Miniconda基础环境。安装脚本不安装或更新驱动。CUDA不兼容时先诊断或使用CPU备用；涉及笔记本原有驱动的变更必须先询问用户。
 
 ## 安装
