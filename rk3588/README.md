@@ -15,6 +15,7 @@
 - 使用唯一ESP32 CP2102N的 `/dev/serial/by-id/`，115200/8N1；多候选时指定 `--serial-device`。
 - 动态发现摄像头，不绑定video40；640×480约15fps。设备OpenCV4.8/NumPy1.24保持。
 - Wi-Fi为现场NetworkManager配置 `roarm-demo-wifi`，密码只存设备。DHCP地址可变。
+- 手机热点配置`roarm-vivo-x300`优先，原网络作备用；`prefer_hotspot.sh --install`启用定时检查，在热点重新出现时主动切回。配置与固定入口见[热点说明](../docs/playground/hotspot.md)。
 
 命令链路：浏览器/上位机→Wi-Fi→RK3588→USB串口→机械臂。新运行时 `/arm/` 返回迁移提示；首页使用 `/api/state`、`/api/action`，不向ESP32无线发命令。历史ArmProxy模拟测试保留。
 

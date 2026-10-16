@@ -9,17 +9,30 @@ $ErrorActionPreference = 'Stop'
 # A short polling interval also handles an RK powered on after the laptop has logged in.
 $PollSeconds = 5
 $RequestTimeoutMs = 3000
+# Retry Windows' negative local-name cache no more than once a minute while waiting.
+$DnsRefreshSeconds = 60
+$LastDnsRefresh = [DateTime]::MinValue
 $Url = 'http://' + $RkHost + ':8080/'
 $LogDir = Join-Path $ProjectRoot 'data\host-manager'
 $StatusPath = Join-Path $LogDir 'web.json'
 New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 $BrowserOpened = $false
 $RuleAddress = ''
-$State = @{status='waiting'; url=$Url; address=''; opened_count=0; error=''; firewall_error=''}
+$State = @{status='waiting'; url=$Url; address=''; opened_count=0; error=''; firewall_error=''; proxy_error=''}
+# A dotted .local name is not covered by Windows' usual <local> proxy exception.
+try {
+    $ProxyPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+    $ProxySettings = Get-ItemProperty $ProxyPath
+    $Bypass = @(([string]$ProxySettings.ProxyOverride -split ';') | Where-Object { $_ })
+    if ($Bypass -notcontains $RkHost) {
+        Set-ItemProperty $ProxyPath -Name ProxyOverride -Value (($Bypass + $RkHost) -join ';')
+    }
+} catch { $State.proxy_error = $_.Exception.Message }
 # Clear an earlier run's ready status before a potentially slow name lookup.
 $State.checked_at = (Get-Date).ToString('o')
 $State | ConvertTo-Json | Set-Content -LiteralPath $StatusPath -Encoding UTF8
 do {
+    $WaitingForNetwork = $true
     try {
         $Addresses = @([System.Net.Dns]::GetHostAddresses($RkHost) | Where-Object {
             $_.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork
@@ -45,6 +58,7 @@ do {
             if ($Address) { break }
         }
         if (!$Address) { throw 'The RK webpage is not reachable yet.' }
+        $WaitingForNetwork = $false
         $State.address = $Address
         $State.firewall_error = ''
         if ($Address -ne $RuleAddress) {
@@ -66,6 +80,10 @@ do {
         $State.status = 'ready'
         $State.error = ''
     } catch {
+        if ($WaitingForNetwork -and ((Get-Date) - $LastDnsRefresh).TotalSeconds -ge $DnsRefreshSeconds) {
+            Clear-DnsClientCache -ErrorAction SilentlyContinue
+            $LastDnsRefresh = Get-Date
+        }
         $State.status = 'waiting'
         $State.error = $_.Exception.Message
     }
