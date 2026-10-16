@@ -54,7 +54,7 @@ Set-Location D:\RoArm-M2
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File host\install_windows_startup.ps1 -RkAddress 192.168.112.122 -Backend cuda
 ```
 
-任务名为 `RoArm-M2 Host`，当前用户登录时以交互身份启动，使用最高权限，电池供电也允许运行；启动脚本在manager异常退出后等待3秒重新加载，计划任务负责登录启动。注册时会停止同名旧任务并立即启动新实例，因此不要同时保留手工运行的manager。防火墙规则 `RoArm-M2 Host RK` 只允许指定RK IP访问TCP8081/8082，包含Public网络。RK IP变化时重新运行注册脚本更新规则与服务地址。笔记本IP变化时更新网页的上位机地址。此任务以登录为边界，不提供无人登录时启动的保证。
+任务名为 `RoArm-M2 Host`，当前用户登录时以交互身份启动，使用最高权限，电池供电也允许运行；启动脚本在manager异常退出后等待3秒重新加载，计划任务负责登录启动。注册时会停止同名旧任务并立即启动新实例，因此不要同时保留手工运行的manager。防火墙规则 `RoArm-M2 Host RK` 只允许指定RK IP访问TCP8081/8082，包含Public网络。RK IP变化时，可按[热点说明](hotspot.md)仅更新防火墙来源地址，再从新网页加载模型；也可重新注册任务以更新默认服务地址，但注册脚本会重置为单个RK来源。笔记本IP变化时更新网页的上位机地址。此任务以登录为边界，不提供无人登录时启动的保证。
 
 manager负责恢复自身启动的worker；Windows job在manager退出或被强制终止时清理子进程，避免旧导演占用端口。manager恢复后导演重新加载，手势需要再次从网页加载。
 
