@@ -36,6 +36,8 @@ DEMO_NAMES = ('寻找观众', '彩色指挥棒', '手势遥控', '中文语音',
 DEMO_KEYS = ('face', 'color', 'gesture', 'voice', 'clap', 'teach', 'program',
              'markers', 'objects', 'rps', 'track', 'panorama', 'difference',
              'digital', 'director', 'agent', 'foam', 'imu')
+# Half of the LED's 0..255 range, applied only when starting a lit follow mode.
+FOLLOW_INITIAL_LIGHT = 128
 
 
 def validate_steps(steps, depth=0):
@@ -125,7 +127,7 @@ class Playground:
         self.director_url, self.director_model = director_url, director_model
         self.last_motion = self.last_seen = self.last_trigger = 0
         self.face_greeted = False
-        self.last_greet = self.last_target_light = 0
+        self.last_greet = 0
         self.follower = SmoothFollower()
         self.follow_token = self.cancel
         self.follow_commands = 0  # Successful tracking writes since this service started.
@@ -317,11 +319,13 @@ class Playground:
                 self.event('本步未在等待期内进入 3° 范围，保留实际反馈', 'warning')
                 return
 
-    def _greet(self, token):
+    def _greet(self, token, light=True):
+        """Nod while allowing automatic follow greetings to preserve manual lighting."""
         initial = self.arm.read()['joints']
         # A small elbow nod preserves the base direction and avoids changing torque.
         target = max(5, min(170, initial['elbow'] - 12))
-        self._step_motion(token, lambda: self.arm.led(180))
+        if light:
+            self._step_motion(token, lambda: self.arm.led(180))
         self._step_motion(token, lambda: self.arm.move('elbow', angle=target))
         self._wait_targets(token)
         if not token.is_set():
@@ -425,17 +429,14 @@ class Playground:
             target = self.follower.target
             if self.follower.phase != 'tracking' or not target:
                 return
-            if mode in ('face', 'markers') and now - self.last_target_light > 1:
-                self.arm.led(160)
-                self.last_target_light = now
             centered = abs(target['cx'] - .5) <= .06 and abs(target['cy'] - .5) <= .08
             settled = all(abs(speed) < 3 for speed in self.follower.velocity.values())
             if (mode == 'face' and centered and settled and options.get('greet', True)
                     and not self.face_greeted and now - self.last_greet > 8):
                 self.face_greeted = True
                 self.last_greet = now
-                self.event('找到观众，亮灯并点头致意；之后继续识别与跟随')
-                self._start_job('人脸致意', self._greet, mode='face')
+                self.event('找到观众，点头致意；之后继续识别与跟随')
+                self._start_job('人脸致意', lambda token: self._greet(token, light=False), mode='face')
 
     def _control_loop(self):
         """Tick from current time; never queue or replay missed motion updates."""
@@ -671,7 +672,10 @@ class Playground:
             if mode == 'track' and 'box' in data:
                 with self.vision_lock:
                     self.vision_engine.set_target(self.frame(), data['box'])
-            with self.lock:
+            with self.action_lock, self.lock:
+                if mode in ('face', 'markers') and options.get('motion', True):
+                    # Initialize once before publishing the mode; later manual changes persist.
+                    self.arm.led(FOLLOW_INITIAL_LIGHT)
                 self.cancel = threading.Event()
                 self.mode, self.options = mode, options
                 self.vision = dict(detections=[], width=640, height=480)

@@ -155,12 +155,31 @@ class ProgramTests(unittest.TestCase):
             self.app._control_tick('face', {}, self.app.cancel, 20)
             self.app._control_tick('face', {}, self.app.cancel, 20.025)
             self.app.job.join(1)
-        greet.assert_called_once()
+        greet.assert_called_once_with(self.app.cancel, light=False)
         self.assertEqual(self.app.mode, 'face')
         self.assertTrue(self.app.face_greeted)
         self.app.last_seen = 20
         self.app._follow('face', {}, [], self.app.cancel, 23)
         self.assertFalse(self.app.face_greeted)
+
+    def test_follow_light_initializes_once_and_preserves_manual_adjustment(self):
+        """Tracking, target reacquisition and automatic nods must keep manual brightness."""
+        target = [dict(cx=.5, cy=.5, w=.2, h=.2)]
+        with self.app.action_lock, patch.object(self.app, '_wait_targets'):
+            for mode in ('face', 'markers'):
+                with self.subTest(mode=mode):
+                    self.transport.calls.clear()
+                    self.app.action(dict(action='mode', mode=mode, options={'greet': False}))
+                    self.app.action(dict(action='led', value=37))
+                    now = time.monotonic()
+                    for index, detections in enumerate((target, target, [], target)):
+                        stamp = now + index * 3
+                        self.app._follow(mode, self.app.options, detections, self.app.cancel, stamp)
+                        self.app._control_tick(mode, self.app.options, self.app.cancel, stamp)
+                    if mode == 'face':
+                        self.app._greet(self.app.cancel, light=False)
+                    lights = [c['led'] for c in self.transport.calls if c['T'] == 114]
+                    self.assertEqual(lights, [128, 37])
 
     def test_visual_tracking_does_not_compete_with_active_greeting(self):
         self.app.mode = 'face'
