@@ -36,7 +36,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File D:\RoArm-M2\host\install
 
 注册登录任务`RoArm-M2 Web`并立即启动，创建桌面快捷方式。该任务每5秒尝试解析RK名称并检查HTTP；就绪后打开默认浏览器，同一任务运行期间只打开一次。它同时把已有模型防火墙规则`RoArm-M2 Host RK`的来源更新为当前可达RK地址，无需因DHCP变化手动改规则。防火墙更新失败会记录错误，但仍可打开基础网页。
 
-任务启动时会在当前用户的Windows代理绕过列表中补入固定主机名，保留其他代理设置。`<local>`仅覆盖不带点的主机名，不能代替`roarm.local`的例外。使用Clash等软件时，其持久化系统代理绕过列表也应包含`roarm.local`，避免代理重新应用设置后出现502。换网后的名称解析失败或旧地址不可达时，任务最多每分钟刷新一次Windows DNS缓存后重试。
+任务每轮检查都会在当前用户的Windows代理绕过列表中补入固定主机名，保留其他代理设置；通过域名及最新系统代理设置取得HTTP200后才标记就绪、打开浏览器。`<local>`仅覆盖不带点的主机名，不能代替`roarm.local`的例外。使用Clash等软件时，其持久化系统代理绕过列表也应包含`roarm.local`；Clash Verge使用自定义列表时需关闭“使用默认绕过”（`use_default_bypass=false`），避免重新应用设置后出现502。换网后的名称解析失败或旧地址不可达时，任务最多每分钟刷新一次Windows DNS缓存后重试。
 
 完整的`host/install_windows_startup.ps1`会同时注册模型与网页任务；`start_windows.ps1`默认使用`http://roarm.local:8080`。已有安装若只想补上自动开网页，运行上述独立安装脚本即可。模型缺失时仍按[Windows说明](windows.md)安装；网页任务不负责安装模型或启动互动。
 

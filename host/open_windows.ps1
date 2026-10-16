@@ -19,20 +19,21 @@ New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 $BrowserOpened = $false
 $RuleAddress = ''
 $State = @{status='waiting'; url=$Url; address=''; opened_count=0; error=''; firewall_error=''; proxy_error=''}
-# A dotted .local name is not covered by Windows' usual <local> proxy exception.
-try {
-    $ProxyPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
-    $ProxySettings = Get-ItemProperty $ProxyPath
-    $Bypass = @(([string]$ProxySettings.ProxyOverride -split ';') | Where-Object { $_ })
-    if ($Bypass -notcontains $RkHost) {
-        Set-ItemProperty $ProxyPath -Name ProxyOverride -Value (($Bypass + $RkHost) -join ';')
-    }
-} catch { $State.proxy_error = $_.Exception.Message }
 # Clear an earlier run's ready status before a potentially slow name lookup.
 $State.checked_at = (Get-Date).ToString('o')
 $State | ConvertTo-Json | Set-Content -LiteralPath $StatusPath -Encoding UTF8
 do {
     $WaitingForNetwork = $true
+    $State.proxy_error = ''
+    # Proxy apps can start after this watcher and replace the dotted .local exception.
+    try {
+        $ProxyPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+        $ProxySettings = Get-ItemProperty $ProxyPath
+        $Bypass = @(([string]$ProxySettings.ProxyOverride -split ';') | Where-Object { $_ })
+        if ($Bypass -notcontains $RkHost) {
+            Set-ItemProperty $ProxyPath -Name ProxyOverride -Value (($Bypass + $RkHost) -join ';')
+        }
+    } catch { $State.proxy_error = $_.Exception.Message }
     try {
         $Addresses = @([System.Net.Dns]::GetHostAddresses($RkHost) | Where-Object {
             $_.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork
@@ -70,6 +71,21 @@ do {
                 # Basic webpage use remains available when model access cannot be updated.
                 $State.firewall_error = $_.Exception.Message
             }
+        }
+        try {
+            # Validate the browser's route using fresh Windows proxy settings each time.
+            $Request = [System.Net.HttpWebRequest]::Create($Url)
+            $Request.Proxy = [System.Net.WebRequest]::GetSystemWebProxy()
+            $Request.Timeout = $RequestTimeoutMs
+            $Response = $Request.GetResponse()
+            try {
+                if ([int]$Response.StatusCode -ne 200) { throw 'The RK browser URL did not return HTTP 200.' }
+            } finally {
+                $Response.Close()
+            }
+        } catch {
+            $State.proxy_error = $_.Exception.Message
+            throw
         }
         if (!$BrowserOpened) {
             Start-Process $Url

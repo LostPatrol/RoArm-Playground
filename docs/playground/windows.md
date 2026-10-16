@@ -84,6 +84,41 @@ Windows PowerShell5.1无法用 `ConvertFrom-Json` 解析RK反馈中同时存在�
 
 修改Windows部署入口看 `host/*.ps1`；改进程管理/平台路径看 `host/manager.py` 与 `host/windows_job.py`；改识别或计划看 `host/worker.py` 与 `host/director.py`；网页连接上位机由RK的 `playground.py` / `playground.js`负责。
 
+## 现场使用 Codex 修改与调试
+
+在笔记本 Codex app 中打开 `D:\RoArm-M2`。先阅读根目录 `AGENTS.md`、`MEMORY.md` 和相关 `docs/playground/`；近期历史依据在 `agent/report/`。使用项目 `.venv\Scripts\python.exe`，不要修改基础Python、显卡驱动或机械臂固件。Codex联网编程需要可访问其服务的网络；已有本地演示不依赖互联网。
+
+Windows原生可检查上位机Python及网页脚本。板端串口使用Linux的 `termios` / `fcntl`，协议测试还使用伪终端，不能用Windows导入失败冒充业务回归失败；修改这些代码后在RK隔离目录运行真实核心测试：
+
+```powershell
+Set-Location D:\RoArm-M2
+.venv\Scripts\python.exe -m unittest discover -s tests -p test_host_worker.py -v
+node tests\test_arm_adapter.js
+node tests\test_playground_ui.js
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File host\test_rk_windows.ps1
+```
+
+RK测试脚本将当前源码和四组核心测试放入板端唯一临时目录，使用板端项目venv；测试使用替身、伪终端和本地HTTP服务，不读取真实机械臂串口，不改线上源码，也不重启服务。测试完成自动清理临时文件。
+
+确认网页处于手动模式、没有运行任务后部署：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File host\deploy_rk_windows.ps1
+# Only synchronize files; restart later after stopping the current experiment:
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File host\deploy_rk_windows.ps1 -SyncOnly
+```
+
+两脚本默认连接 `root@roarm.local`，使用 `%USERPROFILE%\.ssh\roarm-rk3588` 专用密钥，以 `roarm-rk3588` 主机别名匹配已确认的 `known_hosts`；可用 `-RkHost RK-IP -Key 'D:\path\key' -KnownHosts 'D:\path\known_hosts'` 覆盖。身份校验失败时先核实RK主机指纹，不能直接关闭校验。部署前将被覆盖的源码、网页资源和说明备份到板端 `/opt/roarm-camera/backups/windows-时间/`；Python编译通过后才覆盖。默认检查手动/无任务并重启 `roarm-camera.service`，不会修改系统驱动、服务配置、USB、力矩、模型或固件；`-SyncOnly` 只同步文件。部署后刷新网页；真实运动需由现场人员确认环境后验证。
+
+Codex的Windows沙箱使用独立账户，无法直接读取桌面用户的SSH私钥。现场笔记本已在忽略目录 `data\ssh` 内生成沙箱专用身份、登记RK公钥并保存已核验的主机公钥；在Codex中使用：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File host\test_rk_windows.ps1 -Key D:\RoArm-M2\data\ssh\roarm-rk-codex -KnownHosts D:\RoArm-M2\data\ssh\known_hosts
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File host\deploy_rk_windows.ps1 -Key D:\RoArm-M2\data\ssh\roarm-rk-codex -KnownHosts D:\RoArm-M2\data\ssh\known_hosts
+```
+
+项目本地 `.codex\config.toml` 配置基于workspace的 `roarm-field` 权限并启用网络，以访问RK和开发服务；该机器配置、SSH身份及历史记录均不提交Git。重新打开项目或新建项目会话后读取此配置。GitHub推送需要笔记本用户自行完成一次账号授权；不要从其他电脑复制访问令牌。
+
 ## 功能覆盖与验收边界
 
 当前已实现的软件功能沿用原有RK链路；Windows新增运行环境覆盖手势/猜拳和真实语言导演。中文语音/拍手继续使用RK麦克风与Linux `arecord`，无需移植到笔记本麦克风。抓取、IMU等原有未完成功能保持[状态说明](status.md)中的边界，本适配不将它们标记为完成。
