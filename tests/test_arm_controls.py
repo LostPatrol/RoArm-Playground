@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'rk3588'))
-from arm_serial import ArmController
+from arm_serial import ArmController, ELBOW_OFFSET, SHOULDER_OFFSET
 
 
 class RecordingTransport:
@@ -66,6 +66,48 @@ class FactoryControls(unittest.TestCase):
         self.arm.read()
         self.assertEqual(self.arm.cartesian(310, 0, 235)['t'], math.pi)
         self.assertEqual(self.arm.cartesian_delta('x', 10)['t'], math.pi)
+
+    def test_encoder_xyz_roundtrip_and_clamp_jog_keep_other_axes(self):
+        """A measured pose sent back as XYZ must not drift or change shoulder compensation."""
+        straight = math.degrees(SHOULDER_OFFSET - ELBOW_OFFSET)
+        vertical = -math.degrees(math.atan2(310.15, 235.09))
+        for base, shoulder, elbow in [(0, 0, 90), (45, 20, 90), (-60, -20, 60),
+                                     (120, 40, 20), (30, -60, 90), (25, 0, 0),
+                                     (25, 0, 5), (0, 0, straight), (67, vertical, 90),
+                                     (180, 0, 90), (-180, 0, 90)]:
+            with self.subTest(base=base, shoulder=shoulder, elbow=elbow):
+                native = dict(b=math.radians(base), s=-math.radians(shoulder),
+                              e=math.radians(elbow))
+                self.transport.feedback.update(native)
+                raw = self.arm.read()['raw']
+                if base == 0 and shoulder == 0 and elbow == 90:
+                    self.assertAlmostEqual(raw['x'], 310.15)
+                    self.assertAlmostEqual(raw['z'], 235.09)
+                self.arm.cartesian(raw['x'], raw['y'], raw['z'])
+                command = self.transport.commands[-1]
+                for key, name in [('b', 'base'), ('s', 'shoulder'), ('e', 'elbow')]:
+                    self.assertAlmostEqual(command[name], native[key])
+                self.arm.cartesian_delta('t', -.1)
+                command = self.transport.commands[-1]
+                self.assertEqual(command['T'], 101)
+                self.assertEqual(command['joint'], 4)
+                self.assertAlmostEqual(command['rad'], math.pi - .1)
+
+    def test_xyz_jogs_change_only_the_requested_coordinate(self):
+        """Decode each solved native command as feedback to check all XYZ jog axes."""
+        for base, shoulder in [(0, 0), (30, -60), (-60, 15)]:
+            for axis in ('x', 'y', 'z'):
+                with self.subTest(base=base, shoulder=shoulder, axis=axis):
+                    self.transport.feedback.update(b=math.radians(base),
+                        s=-math.radians(shoulder), e=math.pi/2, t=math.pi)
+                    before = self.arm.read()['raw']
+                    self.arm.cartesian_delta(axis, 10)
+                    command = self.transport.commands[-1]
+                    self.transport.feedback.update(b=command['base'], s=command['shoulder'],
+                                                   e=command['elbow'], t=command['hand'])
+                    after = self.arm.read()['raw']
+                    for key in ('x', 'y', 'z'):
+                        self.assertAlmostEqual(after[key], before[key] + (10 if key == axis else 0))
 
     def test_absolute_targets_use_factory_speed_without_waiting_for_feedback(self):
         """A connected slider stream writes targets directly; measurements stay truthful."""

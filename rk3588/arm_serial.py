@@ -24,6 +24,8 @@ LINK2 = math.hypot(236.82, 30)
 LINK3 = math.hypot(280.15, 1.73)
 SHOULDER_OFFSET = math.atan2(30, 236.82)
 ELBOW_OFFSET = math.atan2(1.73, 280.15)
+# Allow floating-point error at fully extended poses, without widening joint limits.
+IK_EPSILON = 1e-6
 BLOCKED_COMMANDS = {600, 601, 603, 604}
 
 
@@ -123,7 +125,8 @@ class ArmController:
             # The repaired arm's shoulder servo is mounted backwards; expose physical angles.
             shoulder = -raw['s']
             upper = math.pi / 2 - shoulder - SHOULDER_OFFSET
-            forearm = math.pi / 2 - shoulder - raw['e']
+            # Include the clamp tip's downward offset, matching the inverse solver.
+            forearm = math.pi / 2 - shoulder - raw['e'] - ELBOW_OFFSET
             radius = LINK2 * math.cos(upper) + LINK3 * math.cos(forearm)
             # Firmware XYZ assumes the original mount; derive actual XYZ from encoders.
             raw = dict(raw, x=radius * math.cos(raw['b']), y=radius * math.sin(raw['b']),
@@ -240,33 +243,48 @@ class ArmController:
         return bool(enabled)
 
     def cartesian(self, x, y, z, t=None, speed=1, direct=False):
-        """Solve factory IK locally and compensate the reversed shoulder mount."""
+        """Choose the closest valid linkage solution and compensate the reversed shoulder."""
         x, y, z, speed = (float(value) for value in (x, y, z, speed))
         if not all(math.isfinite(value) for value in (x, y, z, speed)) or not 0 < speed <= 1:
             raise ValueError('XYZ 须为有效毫米数，坐标速度须在 0..1 内')
         radius = math.hypot(x, y)
         length = math.hypot(radius, z)
-        if not abs(LINK3 - LINK2) < length < LINK3 + LINK2:
+        if not abs(LINK3 - LINK2) - IK_EPSILON <= length <= LINK3 + LINK2 + IK_EPSILON:
             raise ValueError('目标坐标超出机械臂连杆可达范围')
-        # Match simpleLinkageIkRad() so impossible goals cannot be reported as accepted.
-        psi = math.acos(max(-1, min(1, (LINK2**2 + length**2 - LINK3**2) / (2 * LINK2 * length)))) + SHOULDER_OFFSET
-        omega = math.acos(max(-1, min(1, (LINK3**2 + length**2 - LINK2**2) / (2 * length * LINK3))))
-        target = dict(base=math.degrees(math.atan2(y, x)),
-                      shoulder=90 - math.degrees(math.atan2(z, radius) + psi),
-                      elbow=math.degrees(psi + omega - ELBOW_OFFSET))
-        if any(not LIMITS[name][0] <= value <= LIMITS[name][1] for name, value in target.items()):
+        state = self.measured()
+        bend = math.acos(max(-1, min(1, (length**2 - LINK2**2 - LINK3**2) / (2 * LINK2 * LINK3))))
+        candidates = []
+        # A folded arm can have negative planar reach. Keep both radial and elbow
+        # branches so re-sending measured XYZ never forces a different arm posture.
+        for signed_radius in (radius, -radius):
+            base = (math.radians(state['joints']['base']) if radius < IK_EPSILON else
+                    math.atan2(y, x) if signed_radius >= 0 else math.atan2(-y, -x))
+            for fold in (bend, -bend):
+                upper = math.atan2(z, signed_radius) + math.atan2(
+                    LINK3 * math.sin(fold), LINK2 + LINK3 * math.cos(fold))
+                shoulder = math.remainder(math.pi / 2 - upper - SHOULDER_OFFSET, 2 * math.pi)
+                elbow = fold + SHOULDER_OFFSET - ELBOW_OFFSET
+                for turn in (-2 * math.pi, 0, 2 * math.pi):
+                    goal = dict(base=math.degrees(base + turn),
+                                shoulder=math.degrees(shoulder), elbow=math.degrees(elbow))
+                    if all(LIMITS[name][0] - IK_EPSILON <= value <= LIMITS[name][1] + IK_EPSILON
+                           for name, value in goal.items()):
+                        candidates.append({name: max(LIMITS[name][0], min(LIMITS[name][1], value))
+                                           for name, value in goal.items()})
+        if not candidates:
             raise ValueError('目标坐标对应的关节角度超出范围')
+        target = min(candidates, key=lambda goal: sum(
+            (value - state['joints'][name])**2 for name, value in goal.items()))
         if t is None:
             # Encoder noise near the jaw limits must not make XYZ-only moves unusable.
-            t = max(math.radians(45), min(math.pi, self.measured()['raw']['t']))
+            t = max(math.radians(45), min(math.pi, state['raw']['t']))
         t = float(t)
         if not math.isfinite(t) or not math.radians(45) <= t <= math.pi + 1e-6:
             raise ValueError('夹爪 t 须在 45..180 度对应的弧度范围内')
         if type(direct) is not bool:
             raise ValueError('direct 须为布尔值')
         target['gripper'] = math.degrees(t)
-        # Firmware IK assumes the original shoulder mount. Use the same IK above,
-        # then negate only the reversed shoulder in one synchronous joint command.
+        # Firmware IK assumes the original shoulder mount; compensate locally.
         # Direct dragging stays at maximum speed; coordinate speed scales servo steps/s.
         joint_speed = 0 if direct or speed == 1 else max(1, round(1000 * speed))
         self.transport.command(dict(T=102, base=math.radians(target['base']),
@@ -279,6 +297,7 @@ class ArmController:
         return dict(x=x, y=y, z=z, t=t, **({'direct': True} if direct else {'spd': speed}))
 
     def cartesian_delta(self, axis, delta, speed=1):
+        """Jog XYZ from feedback, or adjust only the jaw for a clamp-angle jog."""
         if axis not in ('x', 'y', 'z', 't') or not math.isfinite(float(delta)):
             raise ValueError('坐标增量须使用 x/y/z/t 和有效数值')
         raw = self.read()['raw']
@@ -286,8 +305,14 @@ class ArmController:
             raise ValueError('机械臂未返回 XYZ 坐标反馈')
         goal = {key: raw[key] for key in ('x', 'y', 'z', 't')}
         goal[axis] += float(delta)
-        if axis != 't':
-            goal['t'] = max(math.radians(45), min(math.pi, goal['t']))
+        if axis == 't':
+            speed = float(speed)
+            if not math.isfinite(speed) or not 0 < speed <= 1:
+                raise ValueError('坐标速度须在 0..1 内')
+            self.move('gripper', angle=math.degrees(goal['t']),
+                      speed=0 if speed == 1 else max(1, round(1000 * speed)))
+            return dict(goal, spd=speed)
+        goal['t'] = max(math.radians(45), min(math.pi, goal['t']))
         return self.cartesian(**goal, speed=speed)
 
     def raw(self, command):

@@ -7,7 +7,8 @@ const model=geometry.RoArmModel;
 const home=model.points({base:0,shoulder:0,elbow:90,gripper:180});
 assert.ok(Math.abs(home[2][0]-30)<1e-9);
 assert.ok(Math.abs(home[2][2]-362.88)<1e-9);
-assert.ok(Math.abs(home[3][0]-310.15534)<1e-4);
+assert.ok(Math.abs(home[3][0]-310.15)<1e-9);
+assert.ok(Math.abs(home[3][2]-(126.06+236.82-1.73))<1e-9);
 // Rotating the real base rotates XY, while preserving physical heights and lengths.
 const left=model.points({base:90,shoulder:0,elbow:90,gripper:180});
 assert.ok(Math.abs(left[3][0])<1e-8);assert.ok(Math.abs(left[3][1]-home[3][0])<1e-8);
@@ -79,7 +80,7 @@ const settle=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};
   canvas.onpointerdown({button:0,pointerId:1,clientX:tip.x,clientY:tip.y});
   canvas.onpointermove({clientX:tip.x+4,clientY:tip.y+3});canvas.onpointerup();d.runTimers();
   assert.equal(d.actions[0].packet.action,'cartesian');assert.ok(Math.abs(d.actions[0].packet.y)<1e-7);
-  assert.notEqual(d.actions[0].packet.x,310.15534);assert.equal(d.actions[0].packet.direct,true);assert.equal(d.actions[0].packet.t,Math.PI);
+  assert.notEqual(d.actions[0].packet.x,310.15);assert.equal(d.actions[0].packet.direct,true);assert.equal(d.actions[0].packet.t,Math.PI);
   assert.equal('spd' in d.actions[0].packet,false);
   assert.equal(d.elements.get('feedback-base').textContent,'0.0°');
   // A requested target never drives the green model; measured changes animate between samples.

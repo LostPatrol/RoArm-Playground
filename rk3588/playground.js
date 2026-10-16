@@ -7,7 +7,8 @@ globalThis.RoArmModel = {
   points(joints) {
     const radians=Math.PI/180, b=joints.base*radians;
     const s=Math.PI/2-joints.shoulder*radians-Math.atan2(30,236.82);
-    const e=Math.PI/2-(joints.shoulder+joints.elbow)*radians;
+    // The clamp tip sits below the forearm axis, also included by the backend IK.
+    const e=Math.PI/2-(joints.shoulder+joints.elbow)*radians-Math.atan2(1.73,280.15);
     const spatial=(r,z)=>[r*Math.cos(b),r*Math.sin(b),z+this.pedestal];
     return [[0,0,0],spatial(0,0),spatial(this.link2*Math.cos(s),this.link2*Math.sin(s)),spatial(this.link2*Math.cos(s)+this.link3*Math.cos(e),this.link2*Math.sin(s)+this.link3*Math.sin(e))];
   },
