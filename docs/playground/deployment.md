@@ -3,7 +3,7 @@
 
 上位机支持Ubuntu24.04或原生Windows/Python3.12；Windows演示笔记本安装见[windows.md](windows.md)。RK3588保持Ubuntu20.04/Python3.8/OpenCV4.8，无需升级系统或NPU运行时。
 
-换场地或使用无互联网的手机热点，见[手机热点与换网络](hotspot.md)。自动连接与固定网页地址是两个独立条件。
+换场地或使用无互联网的手机热点，见[固定入口与自动打开网页](hotspot.md)。首次在RK执行`bash /opt/roarm-camera/install_discovery.sh`安装Avahi，发布`roarm.local`；Windows登录任务可自动等待并打开网页，同时更新模型防火墙来源地址。
 
 ## 接线与协议
 

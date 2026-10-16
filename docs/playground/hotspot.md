@@ -1,40 +1,49 @@
-<!-- Portable hotspot setup, automatic connection, and changing LAN addresses. -->
-# 手机热点与换场地使用
+<!-- Stable local webpage, automatic Windows opening, and portable Wi-Fi operation. -->
+# 手机热点与自动打开网页
 
-网页、板端视觉/语音和已安装的笔记本模型可在局域网内运行，不需要互联网。电脑与RK3588须连接同一热点，并允许设备之间通信；机械臂继续通过USB连接RK。
+固定入口为 **`http://roarm.local:8080/`**，不需要查询手机分配的IP，也不依赖互联网。电脑与RK3588须处于能互相通信的同一局域网；机械臂继续通过USB接RK。
 
-## 已保存的热点
+## 日常使用
 
-RK3588已保存热点 **`vivo X300`**（注意大小写和空格），NetworkManager配置名为`roarm-vivo-x300`，启用自动连接、优先级20。密码保存在设备网络配置中，不写入项目文档。原`roarm-demo-wifi`配置保留，可在热点不可用时使用原网络。
+1. 打开手机热点`vivo X300`，保持原名称和密码。
+2. 给RK和机械臂供电，启动演示笔记本并登录Windows。两端已保存热点并开启自动连接。
+3. 等待网页自动打开。RK晚一点启动也可以，电脑会持续等待；也可双击桌面的 **RoArm Playground** 图标。
 
-启动或无线链路中断后，NetworkManager会选择可用的自动连接配置；热点优先级高于原网络。已经连接其他网络时，热点出现不代表立即自动切换。手工切换可在RK终端执行：
+手势、猜拳和导演仍从各自面板点击连接/加载模型，之后点击启动实验。自动打开网页本身不会激活互动或发送机械臂动作。
+
+手机若有“无设备连接时自动关闭热点”，建议关闭。设备已经连接原Wi-Fi时，打开热点不保证立即切换网络；原Wi-Fi下也能使用同一个固定入口。离开原网络后，会选择可用的已保存网络。
+
+## 工作方式与安装
+
+RK运行Avahi，通过mDNS发布`roarm.local`，随网络地址变化更新名称。系统hostname保持不变。首次在RK部署目录执行：
 
 ```sh
-nmcli connection up roarm-vivo-x300
+bash /opt/roarm-camera/install_discovery.sh
 ```
 
-使用同一手机、相同名称/密码和兼容的加密/频段，通常无需再次配网。先打开热点，再给RK上电；Windows笔记本连接热点时勾选“自动连接”，并登录用户以启动模型服务。关闭手机的“无设备连接时自动关闭热点”可避免设备尚未启动时热点消失；手机界面名称以实际设置为准。
+脚本从系统软件源安装`avahi-daemon`并启用自启动，保留原配置`/etc/avahi/avahi-daemon.conf.roarm-backup`。可传入其他单标签名称，例如`install_discovery.sh roarm-demo`，对应`roarm-demo.local`；同一网络的多台设备应使用不同名称。
 
-演示笔记本的`vivo X300`配置已开启自动连接，并调整为WLAN配置第一优先级；原`ATFCDSW-5g`配置保留。已经连着原网络时，可在Wi-Fi菜单选择热点，或执行`netsh wlan connect name="vivo X300" interface="WLAN"`。
-
-## 网页地址与上位机
-
-自动连接不保证IP固定。手机重启或重新开启热点后，DHCP地址甚至网段可能变化；旧收藏地址不能保证继续有效。可从手机热点的已连接设备详情查看RK地址；若手机不显示IP，通过RK本地终端执行`hostname -I`。当前设备系统主机名为`ubuntu2004`。
-
-浏览器打开`http://RK当前IP:8080/`。手势/猜拳和导演还需连接笔记本8082管理器及8081模型服务。当前Windows项目防火墙已同时放行原网络RK地址`192.168.112.122`与热点RK地址`10.140.101.172`；地址保持不变时，切换这两个网络不必重配规则。当前热点笔记本地址为`10.140.101.150`。
-
-若RK地址改变，在Windows管理员PowerShell更新项目规则的地址列表（替换为实际需要保留的RK地址）：
+Windows用演示账户的管理员PowerShell执行一次：
 
 ```powershell
-Set-NetFirewallRule -DisplayName 'RoArm-M2 Host RK' -RemoteAddress 192.168.112.122,10.140.101.172
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File D:\RoArm-M2\host\install_windows_web.ps1
 ```
 
-进入网页对应实验，重新点击连接/加载模型。笔记本打开网页时默认使用其当前IP；其他设备打开时，填写`http://实际笔记本IP:8082`。连接导演会更新本次服务运行使用的模型地址；RK重启后需要重新连接，已有启动配置中的旧笔记本IP不会随DHCP自动更新。详见[Windows说明](windows.md)。
+注册登录任务`RoArm-M2 Web`并立即启动，创建桌面快捷方式。该任务每5秒尝试解析RK名称并检查HTTP；就绪后打开默认浏览器，同一任务运行期间只打开一次。它同时把已有模型防火墙规则`RoArm-M2 Host RK`的来源更新为当前可达RK地址，无需因DHCP变化手动改规则。防火墙更新失败会记录错误，但仍可打开基础网页。
 
-网页加载手势时会把当前RK网页地址传给管理器，无需为每次换网重新注册Windows启动任务。重新运行`install_windows_startup.ps1`会把项目防火墙重设为指定的单个RK地址；若要保留两个网络，之后再更新上述地址列表。
+完整的`host/install_windows_startup.ps1`会同时注册模型与网页任务；`start_windows.ps1`默认使用`http://roarm.local:8080`。已有安装若只想补上自动开网页，运行上述独立安装脚本即可。模型缺失时仍按[Windows说明](windows.md)安装；网页任务不负责安装模型或启动互动。
+
+## 排查与停用
+
+```powershell
+Get-ScheduledTask -TaskName 'RoArm-M2 Web'
+Get-Content D:\RoArm-M2\data\host-manager\web.json
+```
+
+`web.json`保存等待/就绪、当前地址、浏览器打开时间与防火墙错误。若长时间等待，确认热点仍开着、两端在同一网络，并在RK执行`systemctl status avahi-daemon roarm-camera`。可临时用`http://RK当前IP:8080/`检查；隔离访客的网络可能阻止mDNS或设备互访。
+
+临时停止自动打开：`Stop-ScheduledTask -TaskName 'RoArm-M2 Web'`；恢复：`Start-ScheduledTask -TaskName 'RoArm-M2 Web'`。禁用登录启动用`Disable-ScheduledTask`；桌面图标和直接访问仍可用。
 
 ## 验证边界
 
-2026-10-16已验证热点内Ubuntu电脑、Windows笔记本与RK互通。Windows项目Python读取RK首页、解码640×480真实相机图像，8.05秒视频约14.91FPS；15次状态读取均有新串口反馈及上位机心跳。Windows手势/猜拳共用模型与导演真实ready，单动作及两步导演预览正确；未执行其动作。小模型此前也出现过漏步骤，仍须检查预览。
-
-RK无线关闭8秒再开启后，没有手工指定连接即自动回到热点，原网页服务继续运行。Windows自动连接配置已核对，但未做整机冷启动、手机热点开关、关闭移动数据后的独立测试或本轮浏览器渲染验收；真人手势、猜拳与机械臂动作仍需现场确认。
+Windows原生名称解析与HTTP已在手机热点和原Wi-Fi验证；热点消失后RK发布的新地址可以通过同一名称访问。网页任务实际运行、记录浏览器打开成功并自动更新来源规则。RK暂时离线时启动任务，状态为waiting；RK自动联网后变为ready，记录一次浏览器打开。这些不替代Windows自然注销登录、整机冷启动、现场目视或真人互动验收。

@@ -3,6 +3,7 @@
 param(
     [string]$ProjectRoot = (Split-Path -Parent $PSScriptRoot),
     [string]$RkAddress = '192.168.112.122',
+    [string]$RkHost = 'roarm.local',
     [ValidateSet('cuda', 'cpu')][string]$Backend = 'cuda'
 )
 $ErrorActionPreference = 'Stop'
@@ -27,12 +28,17 @@ if ($ExistingTask) {
         throw 'The existing RoArm host task is still stopping; retry after it exits.'
     }
 }
-Get-NetFirewallRule -DisplayName $RuleName -ErrorAction SilentlyContinue | Remove-NetFirewallRule
-New-NetFirewallRule -DisplayName $RuleName -Direction Inbound -Action Allow -Protocol TCP `
-    -LocalPort 8081, 8082 -RemoteAddress $RkAddress -Profile Any | Out-Null
+try {
+    Get-NetFirewallRule -DisplayName $RuleName -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+    New-NetFirewallRule -DisplayName $RuleName -Direction Inbound -Action Allow -Protocol TCP `
+        -LocalPort 8081, 8082 -RemoteAddress $RkAddress -Profile Any | Out-Null
+} catch {
+    # Webpage startup remains useful even if model access needs manual firewall repair.
+    Write-Warning $_.Exception.Message
+}
 $Arguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' +
     (Join-Path $ProjectRoot 'host\start_windows.ps1') + '" -ProjectRoot "' + $ProjectRoot +
-    '" -Server "http://' + $RkAddress + ':8080" -Backend ' + $Backend
+    '" -Server "http://' + $RkHost + ':8080" -Backend ' + $Backend
 $Action = New-ScheduledTaskAction -Execute (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') `
     -Argument $Arguments -WorkingDirectory $ProjectRoot
 $Trigger = New-ScheduledTaskTrigger -AtLogOn -User $Identity.Name
@@ -43,4 +49,5 @@ $Settings = New-ScheduledTaskSettingsSet -RestartCount 3 -RestartInterval (New-T
 Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Principal $TaskPrincipal `
     -Settings $Settings -Description 'Native RoArm-M2 host model manager; starts after user logon.' -Force | Out-Null
 Start-ScheduledTask -TaskName $TaskName
-Write-Host "Registered $TaskName for $($Identity.Name); allowed RK $RkAddress on TCP 8081/8082."
+Write-Host "Registered $TaskName for $($Identity.Name); initial RK address: $RkAddress."
+& (Join-Path $PSScriptRoot 'install_windows_web.ps1') -ProjectRoot $ProjectRoot -RkHost $RkHost

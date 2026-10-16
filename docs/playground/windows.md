@@ -42,9 +42,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File host\start_windows.ps1 -
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File host\start_windows.ps1 -Backend cpu
 ```
 
-RK地址变化时增加 `-Server 'http://RK新地址:8080'`。管理器启动时加载导演；手势worker由网页“尝试连接/加载本机模型”启动。`ROARM_DIRECTOR_BACKEND=cpu|cuda`控制manager默认程序路径；`LLAMA_SERVER`、`DIRECTOR_MODEL_FILE`、`DIRECTOR_CONTEXT`、`DIRECTOR_THREADS`可覆盖程序、模型和推理参数。
+默认RK地址为 `http://roarm.local:8080`，需先按[热点说明](hotspot.md)启用板端Avahi。也可用`-Server 'http://RK-IP:8080'`显式指定。管理器启动时加载导演；手势worker由网页“尝试连接/加载本机模型”启动。`ROARM_DIRECTOR_BACKEND=cpu|cuda`控制manager默认程序路径；`LLAMA_SERVER`、`DIRECTOR_MODEL_FILE`、`DIRECTOR_CONTEXT`、`DIRECTOR_THREADS`可覆盖程序、模型和推理参数。
 
-在笔记本浏览器打开 `http://192.168.112.122:8080/`，进入手势、猜拳或导演页面，点击加载本机模型。通常使用浏览器所在笔记本的地址；必要时填写 `http://笔记本IP:8082`。如果网页来自另一台电脑或手机，需要填写实际Windows上位机地址。导演先生成预览，再由用户确认执行。加载模型本身不会启动运动模式。
+在笔记本浏览器打开 `http://roarm.local:8080/`，进入手势、猜拳或导演页面，点击加载本机模型。通常使用浏览器所在笔记本的地址；必要时填写 `http://笔记本IP:8082`。如果网页来自另一台电脑或手机，需要填写实际Windows上位机地址。导演先生成预览，再由用户确认执行。加载模型本身不会启动运动模式。
 
 在管理员PowerShell中配置登录启动和限定RK来源的防火墙规则：
 
@@ -54,7 +54,7 @@ Set-Location D:\RoArm-M2
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File host\install_windows_startup.ps1 -RkAddress 192.168.112.122 -Backend cuda
 ```
 
-任务名为 `RoArm-M2 Host`，当前用户登录时以交互身份启动，使用最高权限，电池供电也允许运行；启动脚本在manager异常退出后等待3秒重新加载，计划任务负责登录启动。注册时会停止同名旧任务并立即启动新实例，因此不要同时保留手工运行的manager。防火墙规则 `RoArm-M2 Host RK` 只允许指定RK IP访问TCP8081/8082，包含Public网络。RK IP变化时，可按[热点说明](hotspot.md)仅更新防火墙来源地址，再从新网页加载模型；也可重新注册任务以更新默认服务地址，但注册脚本会重置为单个RK来源。笔记本IP变化时更新网页的上位机地址。此任务以登录为边界，不提供无人登录时启动的保证。
+模型任务名为 `RoArm-M2 Host`，当前用户登录时以交互身份启动，使用最高权限，电池供电也允许运行；启动脚本在manager异常退出后等待3秒重新加载。注册时会停止同名旧任务并立即启动新实例，因此不要同时保留手工运行的manager。脚本还注册独立的`RoArm-M2 Web`任务，等待RK后自动打开固定网页，并根据当前可达RK地址更新仅用于TCP8081/8082的`RoArm-M2 Host RK`来源规则（包含Public网络）。桌面`RoArm Playground`可随时重新打开。用演示账户自身的管理员PowerShell注册；不提供无人登录时启动保证。详见[自动打开说明](hotspot.md)。
 
 manager负责恢复自身启动的worker；Windows job在manager退出或被强制终止时清理子进程，避免旧导演占用端口。manager恢复后导演重新加载，手势需要再次从网页加载。
 

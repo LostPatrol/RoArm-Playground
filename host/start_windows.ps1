@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [string]$ProjectRoot = (Split-Path -Parent $PSScriptRoot),
-    [string]$Server = 'http://192.168.112.122:8080',
+    [string]$Server = 'http://roarm.local:8080',
     [ValidateSet('cuda', 'cpu')][string]$Backend = 'cuda'
 )
 $ErrorActionPreference = 'Stop'
