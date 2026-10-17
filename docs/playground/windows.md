@@ -58,6 +58,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File host\install_windows_sta
 
 manager负责恢复自身启动的worker；Windows job在manager退出或被强制终止时清理子进程，避免旧导演占用端口。manager恢复后导演重新加载，手势需要再次从网页加载。
 
+手势worker每次连接优先解析并使用当前IPv4，避免Windows先连接不可达的mDNS IPv6而逐请求等待回退；IPv4不可用时保留普通IPv6连接。仍使用`roarm.local`，不固定DHCP地址，也不修改系统IPv6设置。张手控制夹爪打开，握拳控制夹爪合拢；有效手势须置信度≥0.65、稳定3帧，动作间隔至少1.5秒，因此切换手势时保持约两秒。
+
 首次CUDA推理可能因缓存生成而较慢，演示前先生成一次预览；`data\cache\cuda`保留GPU缓存。`ready`表示模型已加载，首次请求速度需另行检查；CPU备用首次预览也可能耗时几十秒。
 
 ## 检查与维护

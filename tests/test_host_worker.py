@@ -4,6 +4,7 @@ import io
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import math
+import socket
 from pathlib import Path
 import sys
 import threading
@@ -15,7 +16,7 @@ from unittest.mock import Mock, patch
 # Support both `python -m unittest ...` and `python tests/test_host_worker.py`.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from host.director import compile_model_plan, plan, validate_plan
-from host.worker import ClapDetector, Client, GestureLatch, audio_chunks, mono_pcm, pcm_levels, run_audio, speech_result
+from host.worker import ClapDetector, Client, GestureLatch, audio_chunks, connect_ipv4_first, mono_pcm, pcm_levels, run_audio, speech_result
 from host.manager import Manager
 
 
@@ -69,6 +70,19 @@ class InteractionsTest(unittest.TestCase):
     def test_dry_run_has_no_network_write(self):
         self.assertTrue(Client(self.url, True).emit({"action": "clap"}, "clap"))
         self.assertEqual(self.posts, [])
+
+    def test_worker_resolves_current_ipv4_and_keeps_ipv6_fallback(self):
+        """Avoid the failing IPv6 route without pinning yesterday's DHCP address."""
+        with patch('host.worker.socket.getaddrinfo') as resolve, \
+                patch('host.worker.socket.create_connection') as connect:
+            for ip in ('10.140.101.172', '192.168.112.122'):
+                resolve.return_value = [(socket.AF_INET, socket.SOCK_STREAM, 0, '', (ip, 8080))]
+                self.assertIs(connect_ipv4_first(('roarm.local', 8080), 4), connect.return_value)
+                connect.assert_called_with((ip, 8080), 4, None)
+                resolve.assert_called_with('roarm.local', 8080, socket.AF_INET, socket.SOCK_STREAM)
+            resolve.side_effect = socket.gaierror('IPv6-only endpoint')
+            connect_ipv4_first(('::1', 8080), 4)
+            connect.assert_called_with(('::1', 8080), 4, None)
 
     def test_gesture_stability_release_and_mode_change(self):
         latch = GestureLatch()

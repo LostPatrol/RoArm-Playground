@@ -4,13 +4,15 @@ Run with the project's Python. --dry-run prints results without any POST or moti
 """
 import argparse
 import array
+from http.client import HTTPConnection
 import json
 import math
+import socket
 from pathlib import Path
 import subprocess
 import sys
 import time
-from urllib.request import ProxyHandler, Request, build_opener
+from urllib.request import HTTPHandler, ProxyHandler, Request, build_opener
 import wave
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -37,12 +39,43 @@ def pcm_levels(pcm):
             "clipped_fraction": round(sum(abs(s) >= 32760 for s in samples) / count, 5)}
 
 
+def connect_ipv4_first(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None):
+    """Resolve each connection afresh; avoid slow unreachable mDNS IPv6 on Windows."""
+    host, port = address
+    try:
+        addresses = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+    except socket.gaierror:
+        addresses = []
+    for _, _, _, _, endpoint in addresses:
+        try:
+            return socket.create_connection(endpoint, timeout, source_address)
+        except OSError:
+            continue
+    # Retain normal IPv6 support when no usable IPv4 address is available.
+    return socket.create_connection(address, timeout, source_address)
+
+
+class WorkerHTTPConnection(HTTPConnection):
+    """Prefer reachable IPv4 without changing the configured host or system networking."""
+    def connect(self):
+        """Use normal HTTP connection handling with an IPv4-first socket factory."""
+        self._create_connection = connect_ipv4_first
+        super().connect()
+
+
+class WorkerHTTPHandler(HTTPHandler):
+    """Apply connection selection only to this worker's HTTP requests."""
+    def http_open(self, request):
+        """Keep urllib request and response semantics intact."""
+        return self.do_open(WorkerHTTPConnection, request)
+
+
 class Client:
     """Keep camera, mode checks and actions on the same configured RK endpoint."""
     def __init__(self, server, dry_run=False):
         self.server = server.rstrip("/")
         self.dry_run = dry_run
-        self.http = build_opener(ProxyHandler({}))
+        self.http = build_opener(ProxyHandler({}), WorkerHTTPHandler())
 
     def request(self, path, payload=None):
         data = None if payload is None else json.dumps(payload).encode()
