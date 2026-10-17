@@ -1,0 +1,69 @@
+/*
+ * Esther Inspired Paper — a light Typora theme
+ * Adapted from Esther Design System by ESTHER不二 (esthersjw)
+ * Source: https://github.com/esthersjw/esther-design-system
+ * License: CC BY-NC-SA 4.0 (non-commercial, attribution, share-alike)
+ */
+
+@import "./esther/esther-base.css";
+
+:root {
+  --bg-color: #fefcf6;
+  --surface: #fffdf8;
+  --surface-strong: #ffffff;
+  --surface-soft: #faf6eb;
+  --surface-code: #f7f8fa;
+  --side-bar-bg-color: #faf6eb;
+  --text-color: #1a1a2e;
+  --text-muted: #555568;
+  --text-faint: #85858f;
+  --heading-color: #17172a;
+  --primary-color: #2b7fd8;
+  --primary-soft: rgba(43, 127, 216, 0.10);
+  --accent-color: #f4d758;
+  --accent-soft: rgba(244, 215, 88, 0.28);
+  --danger-color: #e84a5f;
+  --danger-soft: rgba(232, 74, 95, 0.10);
+  --border-color: #e8e0cf;
+  --border-strong: #d8ccb5;
+  --shadow-color: rgba(62, 48, 22, 0.10);
+  --code-toolbar: #eef0f4;
+  --code-border: #d9dde5;
+  --code-text: #252832;
+  --code-muted: #727887;
+  --code-cursor: #156fd1;
+  --code-active-line: rgba(43, 127, 216, 0.08);
+  --code-comment: #5f6675;
+  --code-keyword: #8a2d75;
+  --code-operator: #b4233a;
+  --code-string: #2f6f3e;
+  --code-number: #6346a5;
+  --code-variable: #252832;
+  --code-property: #006d77;
+  --code-tag: #a1283e;
+  --code-type: #2f6f3e;
+  --mermaid-theme: default;
+  --inline-code-bg: #f5efe1;
+  --inline-code-text: #b43c50;
+  --select-text-bg-color: #f4d758;
+  --select-text-color: #1a1a2e;
+  --control-text-color: #626275;
+  --control-text-hover-color: #1a1a2e;
+  --item-hover-bg-color: rgba(244, 215, 88, 0.20);
+  --item-hover-text-color: #1a1a2e;
+  --active-file-bg-color: rgba(43, 127, 216, 0.10);
+  --active-file-text-color: #1f68b4;
+  --active-file-border-color: #2b7fd8;
+  --window-border: 1px solid #e8e0cf;
+  --rawblock-edit-panel-bd: #e0d6c3;
+  --search-select-bg-color: rgba(244, 215, 88, 0.55);
+  --focus-ring: rgba(43, 127, 216, 0.32);
+  color-scheme: light;
+}
+
+html,
+body {
+  background:
+    radial-gradient(circle at 86% -8%, rgba(244, 215, 88, 0.18), transparent 28rem),
+    var(--bg-color);
+}

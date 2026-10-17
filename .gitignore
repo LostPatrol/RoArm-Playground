@@ -11,6 +11,10 @@ __pycache__/
 /MEMORY.md
 /MEMORTY.md
 /agent/
+# Local Claude previews and duplicate downloadable delivery archives.
+/.claude/
+/tutorial/.claude/
+/tutorial/site/download/*.zip
 /rk3588/system-test/
 # Device-specific modules/firmware remain local; see docs/development.md.
 /rk3588/rtl8822cu-5.10.198.tar.gz

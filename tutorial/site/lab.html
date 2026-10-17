@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>动手实验 · AI 与 VibeCoding</title>
+<meta name="description" content="六个浏览器内小实验：分词与成本、梯度下降、注意力权重、上下文预算、Agent 循环、量化体积。">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body class="lab-page">
+
+<header class="topbar">
+  <div class="wrap">
+    <a class="brand" href="index.html">AI <span class="dot">·</span> VibeCoding</a>
+    <nav class="nav">
+      <a href="index.html">总览</a>
+      <a href="lab.html" aria-current="page">实验</a>
+      <a href="quiz.html">自测</a>
+      <a href="download.html">下载</a>
+    </nav>
+  </div>
+</header>
+
+<section class="hero" style="padding:64px 0 40px">
+  <div class="wrap">
+    <p class="kicker">Hands-on · 六个实验</p>
+    <h1>把抽象的东西<em>拧一下</em>。</h1>
+    <p class="lede">下面每个实验都是能在浏览器里直接跑的模型。它们不是真实模型（真实模型有几百亿参数），但它们共享同一套数学结构。调参数，看变化，比读十页文字管用。</p>
+    <div class="meta">
+      <span>无需安装</span>
+      <span>无需联网</span>
+      <span>每个 3–8 分钟</span>
+    </div>
+  </div>
+</section>
+
+<section class="block" style="border-bottom:0">
+  <div class="wrap">
+    <div class="lab-grid">
+
+      <!-- 1 tokenizer -->
+      <div class="panel" id="lab-token">
+        <p class="eyebrow">实验 01 · 对应第 4、6 章</p>
+        <h3>一句话被切成多少块</h3>
+        <p class="hint">模型看到的不是字，是 token。中文常一字一块，英文按常见音节切。</p>
+        <label class="field" style="margin-top:14px">输入一段文字
+          <input type="text" id="tok-input" value="机械臂在 25 ms 内合并请求，然后通过 USB 串口下发 T101 指令。">
+        </label>
+        <div class="token-stream" id="tok-out"></div>
+        <div class="row">
+          <label class="field">预期回答长度（token）
+            <input type="range" id="reply-len" min="0" max="1200" step="50" value="300">
+          </label>
+          <label class="field">输入单价（元 / 百万 token）
+            <input type="range" id="price-in" min="0" max="30" step="0.5" value="2">
+          </label>
+          <label class="field">输出单价（元 / 百万 token）
+            <input type="range" id="price-out" min="0" max="60" step="1" value="6">
+          </label>
+        </div>
+        <p class="hint" style="margin:8px 0">单价仅用于演示算术，不代表任何服务商的真实价格。</p>
+        <div class="readout" id="tok-stat"></div>
+        <p class="legend" style="margin-top:10px">算法是演示用的近似：汉字与标点各算一块，英文数字每 4 个字符切一块。真实分词器（BPE）会用一张学出来的词表，结果类似但不相同。</p>
+      </div>
+
+      <!-- 2 gradient descent -->
+      <div class="panel" id="lab-gd">
+        <p class="eyebrow">实验 02 · 对应第 2、3 章</p>
+        <h3>训练就是往低处走</h3>
+        <p class="hint">横轴是一个参数，纵轴是损失。模型每一轮沿斜率反方向挪一步，步长由学习率决定。</p>
+        <canvas id="gd-canvas" width="760" height="330" style="margin:16px 0;width:100%;border:1px solid var(--rule);background:#fffdf7"></canvas>
+        <div class="row">
+          <label class="field">学习率 <span id="gd-lr-val"></span>
+            <input type="range" id="gd-lr" min="0.02" max="1.6" step="0.02" value="0.3">
+          </label>
+          <label class="field">起点
+            <input type="range" id="gd-start" min="-1" max="5" step="0.1" value="0">
+          </label>
+          <button id="gd-step">走一步</button>
+          <button id="gd-auto" class="ghost">自动</button>
+          <button id="gd-reset" class="ghost">重置</button>
+        </div>
+        <div class="readout" id="gd-info" style="margin-top:12px"></div>
+        <p class="legend" style="margin-top:10px">试着把学习率拉到 0.9 以上：点会在谷底两侧来回跳，这就是"步子太大"。</p>
+      </div>
+
+      <!-- 3 attention -->
+      <div class="panel" id="lab-att">
+        <p class="eyebrow">实验 03 · 对应第 4 章</p>
+        <h3>每个词在看谁</h3>
+        <p class="hint">每一行是一个词，格子深浅表示它把多少注意力分给了这一列。点任意格子看这一行的前三名。</p>
+        <div class="att-grid" id="att-grid"></div>
+        <div class="readout" id="att-out">点一个格子试试。矩阵为教学示意，不是真实模型的权重。</div>
+        <p class="legend" style="margin-top:10px">注意"它"这一行：最重的是"小猫"，不是离得更近的"垫子"。这类指代倾向是从大量文本里统计出来的。</p>
+      </div>
+
+      <!-- 4 context budget -->
+      <div class="panel" id="lab-ctx">
+        <p class="eyebrow">实验 04 · 对应第 9 章</p>
+        <h3>上下文窗口的账本</h3>
+        <p class="hint">把每一类内容拖一拖，看它们在窗口里各占多少。超八成时会发生什么？</p>
+        <div class="row" style="margin:14px 0">
+          <label class="field">窗口大小（千 token）
+            <input type="range" id="ctx-window" min="8" max="200" step="4" value="32">
+          </label>
+        </div>
+        <div id="ctx-bars"></div>
+        <div class="row" style="margin-top:14px">
+          <label class="field">系统提示 / 规则
+            <input type="range" id="doc-sys" min="0" max="6000" step="100" value="400">
+          </label>
+          <label class="field">任务说明
+            <input type="range" id="doc-task" min="0" max="6000" step="100" value="300">
+          </label>
+          <label class="field">参考资料
+            <input type="range" id="doc-rag" min="0" max="60000" step="500" value="0">
+          </label>
+          <label class="field">对话历史
+            <input type="range" id="doc-chat" min="0" max="60000" step="500" value="1200">
+          </label>
+          <label class="field">代码与日志
+            <input type="range" id="doc-code" min="0" max="60000" step="500" value="800">
+          </label>
+        </div>
+        <div class="readout" id="ctx-total"></div>
+      </div>
+
+      <!-- 5 agent loop -->
+      <div class="panel" id="lab-agent">
+        <p class="eyebrow">实验 05 · 对应第 5、8 章</p>
+        <h3>一个 Agent 是怎么跑完一件事的</h3>
+        <p class="hint">观察 → 决策 → 行动 → 检查。少掉最后一步，就是"它说改好了"。</p>
+        <div class="row" style="margin:14px 0">
+          <button id="agent-step">走一步</button>
+          <label class="field" style="flex:0 0 auto;flex-direction:row;align-items:center;gap:8px">
+            <input type="checkbox" id="agent-inject" style="accent-color:var(--accent);width:16px;height:16px">
+            注入故障：跳过检查
+          </label>
+        </div>
+        <div class="agent-log" id="agent-log"></div>
+        <p class="legend">真实 Agent 的循环比这长得多，还可能失败、重试、换工具。但结构是一样的：每一步的产出都要能被下一步验证。</p>
+      </div>
+
+      <!-- 6 quantization -->
+      <div class="panel" id="lab-quant">
+        <p class="eyebrow">实验 06 · 对应第 10 章</p>
+        <h3>这个大模型塞得进显存吗</h3>
+        <p class="hint">体积的粗算只有一条：参数量 × 每个权重占几位 ÷ 8。</p>
+        <div class="row" style="margin:14px 0">
+          <label class="field">参数量（B）<span id="q-big"></span>
+            <input type="range" id="q-params" min="0.5" max="70" step="0.5" value="7">
+          </label>
+          <label class="field">精度
+            <select id="q-bits">
+              <option value="16">FP16 / BF16（16 bit）</option>
+              <option value="8">Q8（8 bit）</option>
+              <option value="5" selected>Q4_K_M（约 5 bit）</option>
+              <option value="4">Q4（4 bit）</option>
+              <option value="2">Q2（2 bit）</option>
+            </select>
+          </label>
+          <label class="field">上下文长度（token）
+            <input type="range" id="q-ctx" min="1000" max="32000" step="1000" value="8000">
+          </label>
+        </div>
+        <div class="readout" id="q-out"></div>
+        <p class="legend" style="margin-top:10px">上下文缓存那一项只用来提醒你"权重不是全部"，具体数值随模型结构变化很大，别拿它当精确容量规划。</p>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span>AI + VibeCoding 课程讲义 · 实验全部在浏览器内计算</span>
+    <span><a href="index.html">返回总览</a> · <a href="quiz.html">去自测</a></span>
+  </div>
+</footer>
+
+<script src="assets/chapters.js"></script>
+<script src="assets/site.js"></script>
+</body>
+</html>

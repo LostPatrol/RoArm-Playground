@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 10 章 多模态与本地模型 · AI 与 VibeCoding</title>
+<link rel="stylesheet" href="../assets/style.css">
+
+</head>
+<body class="chapter">
+<header class="topbar"><div class="wrap"><a href="../index.html" class="brand">AI <span class="dot">·</span> VibeCoding</a><nav class="nav"><a href="../index.html">总览</a><a href="../lab.html">实验</a><a href="../quiz.html">自测</a><a href="../download.html">下载</a></nav></div></header><div class="wrap"><div class="chapter-tools no-print"><a href="../print/10-multimodal-and-local-models.html" target="_blank" rel="noopener">打印版</a><a href="../download/10-multimodal-and-local-models.pdf">下载本章 PDF</a></div><div class="layout"><aside class="toc"><div class="toc-title">本章</div><ol><li class="depth-2"><a href="#10-1-一张任务表">10.1 一张任务表</a></li><li class="depth-2"><a href="#10-2-生成图片的技术路线">10.2 生成图片的技术路线</a></li><li class="depth-2"><a href="#10-3-语音-听与说">10.3 语音：听与说</a></li><li class="depth-2"><a href="#10-4-模型选择-先问需求-再看参数">10.4 模型选择：先问需求，再看参数</a></li><li class="depth-2"><a href="#10-5-本地部署实践">10.5 本地部署实践</a></li><li class="depth-2"><a href="#10-6-去哪找模型">10.6 去哪找模型</a></li><li class="depth-2"><a href="#10-7-评测-别只信榜单">10.7 评测：别只信榜单</a></li><li class="depth-2"><a href="#课后题">课后题</a></li></ol></aside><article class="prose"><div class="chapter-head"><h1 id="top">第 10 章 多模态与本地模型</h1></div>
+<blockquote><p>本章目标：按"输入→输出"认识各类模型能做什么、会在哪失败；理解生图的主要技术路线与扩散模型为何成为主流；掌握模型选型维度、本地部署概念与显存估算；对许可证、来源与评测保持警惕。</p></blockquote>
+<p>前几章把大模型当"会写字的工具"。但 AI 还能听、能看、能画。本章把这些任务摆成一张图，再讲怎么把模型放到自己的机器上跑。</p>
+<h2 id="10-1-一张任务表">10.1 一张任务表</h2>
+<p>判断模型靠不靠谱，先问清<strong>输入什么、输出什么</strong>。"AI 能识别图片"——输出是"一个类别"，还是"每个像素属于什么"？</p>
+<table><thead><tr><th>任务</th><th>输入 → 输出</th><th>一句话原理</th><th>典型用途</th><th>常见失败</th></tr></thead><tbody><tr><td>LLM</td><td>文本 → 文本</td><td>逐 token 生成下一段文字</td><td>对话、写代码、Agent</td><td>自信编造、约束失守</td></tr><tr><td>ASR 语音识别</td><td>音频 → 文本</td><td>声学特征映射为字符序列</td><td>会议记录、字幕、口令</td><td>噪声/口音/远场下错字连篇</td></tr><tr><td>TTS 语音合成</td><td>文本 → 音频</td><td>先转声学表示，再还原波形</td><td>播报、有声读物、应答</td><td>多音字、数字读错、语气平板</td></tr><tr><td>生图</td><td>文本 → 图片</td><td>从噪声逐步去噪，逼近描述</td><td>设计草稿、素材</td><td>手指、文字、数量出错</td></tr><tr><td>视频生成</td><td>文本/图片 → 视频</td><td>沿时间维保持一致并逐帧生成</td><td>短片、分镜预演</td><td>动作突变、物体变形</td></tr><tr><td>目标检测</td><td>图片 → 框 + 类别</td><td>回归物体位置框并分类</td><td>机器人视觉、安防</td><td>遮挡、小目标、类别混淆</td></tr><tr><td>分割</td><td>图片 → 像素 mask</td><td>对每个像素判断归属</td><td>抠图、抓取区域</td><td>边缘糊、同类粘连</td></tr><tr><td>深度估计</td><td>图片 → 深度图</td><td>从单图线索推断远近</td><td>3D 重建、避障</td><td>透明/反光面失效</td></tr><tr><td>分类</td><td>图片 → 类别</td><td>整图特征映射到标签</td><td>质检、相册归类</td><td>训练集外类别硬给答案</td></tr><tr><td>Embedding</td><td>文本/图片 → 向量</td><td>压缩成可算相似度的向量</td><td>搜索、知识库、聚类</td><td>相近语义排序不稳</td></tr><tr><td>音源分离</td><td>音频 → 多轨</td><td>按时频特征拆出声源</td><td>人声伴奏分离</td><td>音色相近串轨、残留</td></tr><tr><td>降噪</td><td>噪声 → 干净音频</td><td>估计噪声成分并抑制</td><td>通话增强、录音清理</td><td>人声发闷、"水下感"</td></tr></tbody></table>
+<blockquote><p>要点：所有模型都有<strong>适用范围</strong>。看到演示先问：它在什么输入上成功？换到我的场景，输入差在哪？</p></blockquote>
+<h2 id="10-2-生成图片的技术路线">10.2 生成图片的技术路线</h2>
+<p>"生成一张图"有好几条路，区别在于<strong>怎么定义"像一张真实的图"</strong>。</p>
+<table><thead><tr><th>技术路线</th><th>核心原理</th><th>代表模型</th><th>特点</th></tr></thead><tbody><tr><td>扩散 Diffusion</td><td>学习"如何逐步去噪"，从随机噪声还原图像</td><td>DDPM、Latent Diffusion、Stable Diffusion、Imagen</td><td>主流；质量高、可控性强，采样要多步</td></tr><tr><td>GAN</td><td>生成器与判别器对抗训练</td><td>DCGAN、StyleGAN、BigGAN</td><td>生成快；训练不稳，易模式坍塌</td></tr><tr><td>VAE</td><td>编码到潜空间，再从潜变量采样解码</td><td>VAE、β-VAE、VQ-VAE</td><td>潜空间直观，适合重建插值；生成偏模糊</td></tr><tr><td>自回归</td><td>把图像看成像素或视觉 token 序列逐个预测</td><td>PixelRNN、PixelCNN、DALL·E 1、LlamaGen、VAR</td><td>与语言模型同构，便于讲 next token</td></tr><tr><td>掩码生成</td><td>遮住部分视觉 token，反复预测并修正</td><td>MaskGIT</td><td>不必按顺序，能并行补全</td></tr><tr><td>流模型</td><td>学习从简单分布到图像分布的可逆变换</td><td>RealNVP、Glow</td><td>密度可显式计算，但结构约束强</td></tr><tr><td>Flow Matching</td><td>学习从噪声流向图像的速度场</td><td>Stable Diffusion 3、FLUX 相关路线</td><td>与扩散很近，是重要新路线</td></tr><tr><td>能量模型</td><td>学能量函数，采样寻找低能量结果</td><td>JEM 等</td><td>偏研究导向，采样与训练较复杂</td></tr></tbody></table>
+<p><strong>为什么扩散成了主流？</strong> 一是训练目标干净：不要求一次画对，只需判断"给定加噪程度时噪声长什么样"，比对抗训练稳定。二是<strong>可控性强</strong>：生成是多步去噪，每步都能被引导——文字通过条件机制影响每步，"局部重画""按骨架摆姿势""按参考图定风格"都能插进过程。潜空间扩散把计算放在压缩表示上，成本也随之下降。GAN 快但难训，自回归好但慢，扩散是折中。</p>
+<p><strong>ComfyUI 的节点图</strong>值得单独说。传统界面是"填提示词→出图"，隐藏中间步骤；ComfyUI 拆成节点连线：加载模型→编码提示词→采样去噪→解码→保存，每节点可换可调。它其实是<strong>把上面这张表画成了流程图</strong>。</p>
+<h2 id="10-3-语音-听与说">10.3 语音：听与说</h2>
+<p>TTS（文本转语音）与 ASR（语音转文本）方向相反，却同样容易误判：<strong>演示片段好听，不代表你的场景能用。</strong></p>
+<p><strong>音色克隆的边界。</strong> 技术上几十秒样本就能复制音色；伦理与法律上很清楚：<strong>必须获得本人明确同意</strong>，不得伪造他人声音用于冒充、诈骗或传播其未说过的观点，"内部娱乐"也不行。课堂只用自己或明确授权的样本。</p>
+<p><strong>情绪与语气</strong>是 TTS 质量的另一半：好的能控制语速、停顿与情绪，差的只会平铺直叙。"像不像真人"不是标准，"在你的场景里合不合适"才是。</p>
+<p><strong>中文 ASR 的难点</strong>，第 11 章的机械臂语音控制会正面撞上：</p>
+<table><thead><tr><th>难点</th><th>表现</th></tr></thead><tbody><tr><td>远场</td><td>一两米外，直达声与反射声混在一起</td></tr><tr><td>混响</td><td>回声拖尾糊住音节，短命令尤易错</td></tr><tr><td>噪声</td><td>风扇、音乐与人声频段重叠</td></tr><tr><td>中文特性</td><td>同音字、轻声儿化、口音差异大</td></tr></tbody></table>
+<p>对策不是"换个更大的模型"，而是<strong>收紧任务</strong>：固定口令表、限制距离、加提示音确认、失败时要求重复。把开放域识别降级成有限选项的匹配题。</p>
+<h2 id="10-4-模型选择-先问需求-再看参数">10.4 模型选择：先问需求，再看参数</h2>
+<p><strong>大 vs 小。</strong> 大模型知识广、推理强，但贵、慢、难私有部署；小模型在窄任务上常够用，且快、便宜、可控。很多"必须上大模型"的判断，其实是任务没描述清。</p>
+<p><strong>云端 vs 边缘。</strong> 云端免部署、随时可用，代价是网络依赖、数据出境、按量计费；边缘（本机、板卡）数据不出门、可离线、成本固定，代价是维护与性能上限。涉隐私数据或需稳定离线时，边缘往往更合理。</p>
+<p><strong>量化。</strong> 把权重从 16 位浮点压到更低位宽，换显存和速度。<code>Q4_K_M</code> 表示<strong>每权重平均约 4-5 bit</strong>，K 为分块量化，M 为中等混合精度（关键层保留更多位）。这是体积与质量的常用折中——越高越准越占内存，越低越省但输出可能变"钝"。</p>
+<p><strong>改行为还是补知识？</strong> 选手段前先回答：</p>
+<table><thead><tr><th>手段</th><th>适合什么</th><th>数据量</th><th>成本</th><th>更新频率</th><th>改的是</th></tr></thead><tbody><tr><td>提示词</td><td>描述任务、格式、风格</td><td>无</td><td>最低</td><td>随时</td><td>行为（临时）</td></tr><tr><td>RAG</td><td>大量事实资料需引用</td><td>文档即可</td><td>低到中</td><td>高（资料常变）</td><td>知识</td></tr><tr><td>LoRA 微调</td><td>固定风格/格式/用语</td><td>数百到数千样本</td><td>中</td><td>低</td><td>行为（稳定）</td></tr><tr><td>全量微调</td><td>改变根本能力倾向</td><td>大量高质量数据</td><td>最高</td><td>极低</td><td>行为与知识</td></tr></tbody></table>
+<p>口诀：<strong>能靠"说清楚"解决的别检索，能靠检索解决的别微调。</strong> 微调不擅长记具体事实，让它背常变的价格表多半白费力气。</p>
+<h2 id="10-5-本地部署实践">10.5 本地部署实践</h2>
+<p>三个常被混淆的工具，定位不同：</p>
+<table><thead><tr><th>工具</th><th>定位</th></tr></thead><tbody><tr><td>llama.cpp</td><td>推理引擎本体，C/C++ 实现，跨平台、可在 CPU 上跑，常作后端</td></tr><tr><td>Ollama</td><td>命令行服务，封装下载、运行、API，一条命令跑起来</td></tr><tr><td>LM Studio</td><td>图形界面，浏览模型、调参数、对比输出，学习友好</td></tr></tbody></table>
+<p><strong>GGUF 是文件格式</strong>：把权重、量化信息、词表打包成单文件，专为 llama.cpp 这类本地推理设计。<code>.gguf</code> 多为本地跑，<code>.safetensors</code> 更通用，<code>.pth</code> 是 PyTorch 检查点。</p>
+<p><strong>显存/内存估算</strong>，别背机型结论，记公式：</p>
+<pre><code>模型权重占用 ≈ 参数量 × 量化位数 / 8
+运行总占用   ≈ 权重 + KV cache（随上下文长度线性增长）+ 框架开销</code></pre>
+<p>符号化例子：参数 <code>P</code>（单位十亿），Q4（约 4.5 bit/权重），权重约 <code>P × 4.5 / 8</code> GB——10B 约 5.6 GB，14B 约 7.9 GB。再留缓存与框架开销：窗口翻倍，KV cache 也大致翻倍。"装得下"和"跑得动长对话"是两件事。</p>
+<p><strong>CPU vs GPU 的直觉</strong>：GPU 把矩阵运算并行铺开，生成快得多；CPU 也能跑，但慢到让人重估"要不要本地部署"。<strong>放不进显存就退到内存甚至硬盘</strong>，性能断崖下跌——最常见的挫败点。</p>
+<blockquote><p>要点：本地部署的第一道门槛不是"会不会装"，而是<strong>算清楚要什么</strong>：多少参数、多少位宽、多长上下文、能否接受每秒几个字。</p></blockquote>
+<h2 id="10-6-去哪找模型">10.6 去哪找模型</h2>
+<table><thead><tr><th>平台</th><th>角色</th></tr></thead><tbody><tr><td>Hugging Face</td><td>模型与数据集集散地，文档最全，多数模型的原发布地</td></tr><tr><td>GitHub</td><td>代码与推理框架的家，模型常挂在 release 附件</td></tr><tr><td>ModelScope 魔搭</td><td>国内镜像，访问更稳，常有中文适配</td></tr></tbody></table>
+<p><strong>看 model card 比看排行榜重要</strong>。重点四项：能力与训练数据来源、适用与不适用场景、许可证、量化版本的行为差异。<strong>许可证</strong>分两类：Apache/MIT 这类宽松协议，与常有商用限制、署名要求或用户数门槛的自定义协议，直接读仓库里的 license。</p>
+<p><strong>不要下载来路不明的 <code>.gguf</code> 或 <code>.pth</code>。</strong> 权重文件大、格式不透明，可能被替换、夹带，或根本不是它声称的模型。只从官方仓库或可信镜像下载，核对大小与哈希。</p>
+<h2 id="10-7-评测-别只信榜单">10.7 评测：别只信榜单</h2>
+<p>Benchmark 有三个常见问题：<strong>刷榜</strong>（针对测试集过度优化）、<strong>数据泄漏</strong>（测试题混进训练数据）、<strong>任务不匹配</strong>（榜单考数学题，你要的是中文指令遵循）。它能筛掉明显不行的，选不出适合你的。</p>
+<p>更可靠的是<strong>做自己的小评测</strong>：从真实场景挑 10 条任务，先写下"什么算合格"，再让候选模型各跑一遍、人工打分。过程朴素，但比榜单更贴近需求。记录保留：输入、模型、输出、判定理由。</p>
+<div class="task-box"><h2 id="课后题">课后题</h2>
+<ol><li>从 10.1 的表中挑一个非 LLM 任务，说明输入、输出和一个具体失败场景。</li><li>"逐步去噪"为什么比"一次生成整张图"更容易控制？结合扩散与 GAN 的差别回答。</li><li>做"离线可用的中文语音指令控制"项目，判断选云端还是边缘、用 ASR 还是 TTS，并列三条可能失败的原因。</li><li>任务是"按公司最新制度回答问题，制度每季度更新"，在提示词、RAG、LoRA 中选一个并说明理由；若改成"统一输出为固定表格"，选择会变吗？</li><li>找两个同类模型各读一遍 model card，比较许可证与适用场景，说明你敢不敢用在自己项目里。</li><li>（选做）本地模型实验：用 10.5 的公式先估算 7B、Q4 的权重占用与上下文翻倍后的增长，再准备一个 GGUF 模型，换高/低量化档位跑同一批问题，记录速度、内存与输出质量。条件不足时只做估算部分。</li></ol>
+</div><nav class="chapter-nav"><a href="09-context-memory-and-workflow.html"><span class="dir">上一篇</span>上下文、记忆与工作流</a><a href="11-vibecoding-and-people.html"><span class="dir">下一篇</span>VibeCoding 实战</a></nav></article></div></div><footer><div class="wrap"><span>AI + VibeCoding 课程讲义</span><span><a href="../index.html">返回总览</a></span></div></footer>
+</body>
+</html>

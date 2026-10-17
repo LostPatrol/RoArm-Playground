@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI 与 VibeCoding · 课程讲义</title>
+<meta name="description" content="面向非 AI 专业学生的 AI 与 VibeCoding 课程：理解模型、用好 Agent、交付可验收的项目。">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wrap">
+    <a class="brand" href="index.html">AI <span class="dot">·</span> VibeCoding</a>
+    <nav class="nav">
+      <a href="index.html" aria-current="page">总览</a>
+      <a href="lab.html">实验</a>
+      <a href="quiz.html">自测</a>
+      <a href="download.html">下载</a>
+    </nav>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap">
+    <p class="kicker">Course Notes · 2026</p>
+    <h1>先看清它是什么，<br>再<em>让它替你做事</em>。</h1>
+    <p class="lede">一门十二学时的课：从"AI"这个词背后究竟是模型、产品还是程序讲起，到把需求说到能被执行，再到交付一个当场改得动、坏得体面的项目。</p>
+    <div class="meta">
+      <span>13 章正文</span>
+      <span>6 个动手实验</span>
+      <span>4 周课表</span>
+      <span>可离线运行</span>
+    </div>
+  </div>
+  <svg class="hero-art" viewBox="0 0 420 420" fill="none" aria-hidden="true">
+    <circle cx="210" cy="210" r="150" stroke="#d9cfbc" stroke-width="1"/>
+    <circle cx="210" cy="210" r="104" stroke="#d9cfbc" stroke-width="1"/>
+    <circle cx="210" cy="210" r="58" stroke="#d9cfbc" stroke-width="1"/>
+    <path d="M210 60 L210 360 M60 210 L360 210" stroke="#d9cfbc" stroke-width="1"/>
+    <path d="M210 210 m-58 0 a58 58 0 0 1 58 -58" stroke="#b4552d" stroke-width="2.5" stroke-linecap="round"/>
+    <circle cx="210" cy="152" r="4" fill="#b4552d"/>
+    <circle cx="268" cy="210" r="3" fill="#2f5d50"/>
+    <circle cx="152" cy="268" r="3" fill="#c79a3b"/>
+    <path d="M268 210 L326 122" stroke="#2f5d50" stroke-width="1.2" stroke-dasharray="4 4"/>
+    <circle cx="326" cy="122" r="5" fill="none" stroke="#2f5d50" stroke-width="1.4"/>
+  </svg>
+</section>
+
+<section class="block">
+  <div class="wrap">
+    <p class="eyebrow">Course map</p>
+    <h2>十三章，一条从"看懂"到"做出来"的路</h2>
+    <p class="section-lede">不必按顺序读完。带实心点的章节是核心，其余可以当手册查。点开任意一章即可阅读，右侧有本章目录。</p>
+    <div class="map" id="map">
+      <noscript><p>课程目录需要 JavaScript。你也可以直接打开 <code>chapters/00-course-map.html</code>。</p></noscript>
+    </div>
+  </div>
+</section>
+
+<section class="block">
+  <div class="wrap">
+    <p class="eyebrow">What you get</p>
+    <h2>不止是读，还有能动手的部分</h2>
+    <div class="features">
+      <div class="feature">
+        <strong>六个小实验</strong>
+        <span>分词与成本、梯度下降、注意力权重、上下文预算、Agent 循环、量化体积。都在浏览器里跑，不用装环境。</span>
+      </div>
+      <div class="feature">
+        <strong>章末自测</strong>
+        <span>每题答完即给解释，答错也能看懂为什么错。适合课后十分钟过一遍。</span>
+      </div>
+      <div class="feature">
+        <strong>讲义与 PDF</strong>
+        <span>每章独立成篇，可单独打印或下载。网站上读的是同一份内容，顺序不同。</span>
+      </div>
+      <div class="feature">
+        <strong>离线可用</strong>
+        <span>整个站点是静态文件。断网时从仓库直接起一个本地服务即可，课堂不依赖网络。</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="block">
+  <div class="wrap">
+    <p class="eyebrow">How to read</p>
+    <h2>三条建议</h2>
+    <div class="map" style="grid-template-columns:repeat(3,1fr)">
+      <div class="chap" style="cursor:default">
+        <span class="no">01</span>
+        <h3>先读第 1 章</h3>
+        <p>那张"八级台阶"图会在后面每一章反复出现。先建立坐标系，后面的术语才有地方放。</p>
+      </div>
+      <div class="chap" style="cursor:default">
+        <span class="no">02</span>
+        <h3>遇到术语就查</h3>
+        <p>附录 A 是一页纸的术语表，每个词一句话加章节索引。不要为了一个词停下整章。</p>
+      </div>
+      <div class="chap" style="cursor:default">
+        <span class="no">03</span>
+        <h3>课后题要写</h3>
+        <p>每章末尾的题不是装饰。尤其是"用你自己的项目举例"那类，写下来才会发现哪里没懂。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span>AI + VibeCoding 课程讲义 · 静态站点，无需构建即可部署</span>
+    <span><a href="download.html">讲义下载</a> · <a href="lab.html">动手实验</a></span>
+  </div>
+</footer>
+
+<script src="assets/chapters.js"></script>
+<script src="assets/site.js"></script>
+</body>
+</html>

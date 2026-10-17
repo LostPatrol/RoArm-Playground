@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>下载与打印 · AI 与 VibeCoding</title>
+<meta name="description" content="按章下载 PDF、打印讲义、以及在本机离线运行的说明。">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body class="download-page">
+
+<header class="topbar">
+  <div class="wrap">
+    <a class="brand" href="index.html">AI <span class="dot">·</span> VibeCoding</a>
+    <nav class="nav">
+      <a href="index.html">总览</a>
+      <a href="lab.html">实验</a>
+      <a href="quiz.html">自测</a>
+      <a href="download.html" aria-current="page">下载</a>
+    </nav>
+  </div>
+</header>
+
+<section class="hero" style="padding:64px 0 40px">
+  <div class="wrap">
+    <p class="kicker">Papers · 按章分发</p>
+    <h1>打印、带走、<em>离线打开</em>。</h1>
+    <p class="lede">讲义按章独立成文，每章一页纸的篇幅到一个章节的篇幅不等。上课时选需要的章打印，不必印整本。服务器带宽有限，请按需下载。</p>
+  </div>
+</section>
+
+<section class="block">
+  <div class="wrap">
+    <p class="eyebrow">Per chapter</p>
+    <h2>分章 PDF</h2>
+    <p class="section-lede">每章一个文件，A4 排版，章末课后题单独起页。点章节名阅读网页版，点右侧按钮下载。</p>
+    <div class="map" id="dl-map">
+      <noscript><p>这一页需要 JavaScript 才能列出章节。你也可以直接打开 <code>chapters/00-course-map.html</code>。</p></noscript>
+    </div>
+  </div>
+</section>
+
+<section class="block">
+  <div class="wrap">
+    <p class="eyebrow">Offline</p>
+    <h2>课堂上没有网络怎么办</h2>
+    <p class="section-lede">整个站点是纯静态文件，没有后端、没有外部字体、没有 CDN。把 <code>site/</code> 目录拷到演示机，起一个本地服务即可。</p>
+    <div class="panel" style="margin-top:22px">
+      <h3 style="margin-top:0">在本机运行</h3>
+      <p>在仓库根目录执行下面两行，浏览器打开提示的地址。断开 Wi-Fi 也照常可用。</p>
+      <pre><code>python tutorial/tools/build_docs.py
+python -m http.server 8080 --directory tutorial/site</code></pre>
+      <p class="hint">第一条只在改过 Markdown 后需要。站点里所有脚本都是相对路径，也可以直接双击 <code>site/index.html</code> 打开；本地服务的好处是地址栏更短、行为更接近线上。</p>
+    </div>
+    <div class="panel" style="margin-top:18px">
+      <h3 style="margin-top:0">重新导出 PDF</h3>
+      <p>构建脚本用本机已安装的 Chrome 或 Edge 无头模式导出，不依赖任何 Python 包。</p>
+      <pre><code>python tutorial/tools/build_docs.py --pdf</code></pre>
+      <p class="hint">导出的是 <code>site/print/</code> 下的打印版页面，与网页版内容一致、版式更紧凑。没有浏览器时会跳过并提示，不影响网页构建。</p>
+    </div>
+  </div>
+</section>
+
+<section class="block" style="border-bottom:0">
+  <div class="wrap">
+    <p class="eyebrow">Plain text</p>
+    <h2>原始 Markdown</h2>
+    <p class="section-lede">如果你要在 Typora 里改、在别的编辑器里批注，或想自己换排版，直接取源文件。主题建议用纸感浅色系，不要用深色背景打印。</p>
+    <div class="panel" style="margin-top:22px">
+      <p>源文件在仓库的 <code>tutorial/</code> 目录下，文件名即章号：<code>00-course-map.md</code> 到 <code>13-teaching-and-assessment.md</code>，另加 <code>appendix-a-glossary.md</code> 与 <code>appendix-b-resources.md</code>。</p>
+      <p>每章开头一行 HTML 注释说明本章用途，正文以一级标题开始，末尾统一是 <code>## 课后题</code>。改完重新执行构建即可，无需改脚本。</p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span>AI + VibeCoding 课程讲义 · 静态站点，可直接部署</span>
+    <span><a href="index.html">返回总览</a></span>
+  </div>
+</footer>
+
+<script src="assets/chapters.js"></script>
+<script>
+/* Download page: one row per chapter, PDF button only when the file exists. */
+(function () {
+  var host = document.getElementById('dl-map');
+  if (!host || !window.COURSE) return;
+  var html = '';
+  window.COURSE.chapters.forEach(function (c) {
+    var pdf = c.pdf
+      ? '<a class="btn" style="justify-self:end;text-decoration:none" href="download/' + c.slug + '.pdf" download>PDF</a>'
+      : '<span class="legend" style="justify-self:end">网页版 / 打印版</span>';
+    html += '<div class="chap" style="cursor:default;display:grid;grid-template-columns:1fr auto;gap:6px 16px;align-items:center">'
+      + '<a href="chapters/' + c.slug + '.html" style="text-decoration:none;color:inherit">'
+      + '<span class="no">' + c.label + '</span>'
+      + '<h3 style="margin:6px 0 4px">' + c.title.replace(/^第\s*\S+\s*章\s*/, '').replace(/^附录\s*\S\s*/, '') + '</h3>'
+      + '<p>' + c.blurb + '</p></a>' + pdf + '</div>';
+  });
+  host.innerHTML = html;
+})();
+</script>
+</body>
+</html>

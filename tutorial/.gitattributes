@@ -1,0 +1,2 @@
+# Keep the server installer executable after a Windows checkout.
+tools/install_server.sh text eol=lf
