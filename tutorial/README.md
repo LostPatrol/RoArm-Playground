@@ -12,6 +12,8 @@
 
 Windows 可运行 `tutorial/start.ps1`，或直接双击 `tutorial/site/index.html`。其他电脑同样可以直接打开首页；离线 ZIP 解压后打开其中的 `index.html`，无需安装 Python 或 Node.js。
 
+现场演示电脑在仓库根目录执行 `git pull --ff-only origin main` 后，直接打开 `tutorial/site/index.html`。仓库已包含完整网页、资源、Markdown 和 16 份 PDF，无需重新构建。
+
 如需局域网分享，在仓库根目录用该电脑已有的 Python 3 执行：
 
 ```text
@@ -25,10 +27,12 @@ Linux/macOS 可将 `python` 换成 `python3`。本机打开 `http://localhost:80
 只修改 Markdown 后需重新构建；只阅读预构建网页无需执行：
 
 ```text
-python tutorial/tools/build_docs.py --pdf --package
+python tutorial/tools/build_docs.py --package
 ```
 
-构建脚本仅使用 Python 3.10+ 标准库。PDF 导出需要现有 Chrome/Edge，使用随站点附带的 Esther Inspired Paper 主题，输出到 `site/download/`。没有浏览器时可省略 `--pdf` 构建网页和离线包。仓库本机使用 `.venv/Scripts/python.exe` 执行上述命令。
+构建脚本仅使用 Python 3.10+ 标准库，以上命令更新网页和离线包，并保留现有 PDF。仓库本机使用 `.venv/Scripts/python.exe` 执行上述命令。
+
+正式 PDF 使用 Typora 原生“文件 → 导出 → PDF”，选择 Esther Inspired Paper 主题，保存到 `site/download/` 下的同名文件。脚本的 `--pdf` 参数使用 Chrome/Edge 生成，会覆盖同名 PDF，排版与 Typora 原生导出可能不同；保留手动导出结果时请使用上面的命令。
 
 ## 阿里云部署与回滚
 
